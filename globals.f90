@@ -14,8 +14,8 @@ module globals
 
     real*8               :: pstar, Ra  ! endogenous prices
     real*8               :: Agg_DI, Agg_Gov, Agg_Loan, &
-                            Agg_Sec, Agg_Dep, Agg_Whole, Agg_Corp, Agg_Def2
-    real*8, dimension(2) :: Agg_Liq, Agg_Def, Agg_Div, Agg_Def_stationary
+                            Agg_Sec, Agg_Dep, Agg_Whole, Agg_Corp, Agg_Def2, Agg_Liq
+    real*8, dimension(2) :: Agg_Def, Agg_Div, Agg_Def_stationary
 
     real*8, parameter    :: beta_pre = 1d0/1.0025d0  ! household discount factor
     real*8, parameter    :: Rd       = 1d0/beta_pre   ! equilibrium deposit rate
@@ -48,8 +48,8 @@ module globals
 
     ! bank deposit capacity constraints
     integer, parameter                                 :: dbar_size = 6
-    real*8, dimension(size(theta),dbar_size)           :: dbar
-    real*8, dimension(size(theta),dbar_size,dbar_size) :: dbar_prob
+    real*8, dimension(dbar_size)           :: dbar
+    real*8, dimension(dbar_size,dbar_size) :: dbar_prob
 
     ! networth grid
     real*8           :: nstar
@@ -85,7 +85,6 @@ module globals
     real*8                                             :: ebar
     real*8                                             :: phi_lr
     real*8, parameter :: lr_hair = .083d0 !.15d0
-    real*8, parameter :: lr_run = 1d0
 
     ! no liquidation price
     real*8, parameter :: no_liq_price = .999d0
@@ -112,7 +111,7 @@ module globals
     real*8                         :: l_sigma2       ! loan return volatility
     real*8                         :: gam            ! bank discount factor
     real*8                         :: alpha          ! outside security investor elasticity
-    real*8, dimension(size(theta)) :: dbar_mu        ! average deposit capaciy constraint
+    real*8 :: dbar_mu        ! average deposit capaciy constraint
     real*8                         :: i_s             ! return on securities
 
 
@@ -165,7 +164,7 @@ module globals
     !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
 
     ! loan-to-security, deposit-to-wholesale, leverage ratio, insolvency default rate, liquidity ratio, deposit share 1, deposit share 2, deposit share 3
-    real*8, dimension(8) :: data_moms = (/ 3.35d0, 3.20d0, 9.61d0, 25.5d0, 53.11d0, 73.3d0, 58.2d0, 45.3d0 /)
+    real*8, dimension(6) :: data_moms = (/ 3.35d0, 3.20d0, 9.61d0, 25.5d0, 73.3d0, 45.3d0 /)
 
     !~~~~~~~~~~~~~~~~!
     !                !
@@ -521,7 +520,7 @@ contains
         ! initialize
         temp_DI = 0d0
 
-        ! for each (n_b,theta,dbar)
+        ! for each (n_b,dbar)
         do ii = 1,bank_nlen
             do kk=1,dbar_size
 
@@ -619,7 +618,7 @@ contains
 
         implicit none
 
-        real*8, dimension(2) :: Aggregate_Liq
+        real*8 :: Aggregate_Liq
 
         integer :: ii, jj, kk, ll, mm, nn
         integer, dimension(1) :: min_idx
@@ -632,39 +631,27 @@ contains
 
         ! for each (n_b,theta,dbar)
         do ii = 1,bank_nlen
-            do jj =1,size(theta)
-                do kk=1,dbar_size
+            do jj =1,dbar_size
 
-                    ! for each funding shock
-                    do ll=1,size(delta)
+                ! for each funding shock
+                do ll=1,size(delta)
 
-                        excess_cash  = cpol(ii,jj,kk)
+                    ! if no liquidity default
+                    if ( pstar*spol(ii,jj) >= delta(ll)*apol(ii,jj) ) then
 
-                        ! if no liquidity default
-                        if ( excess_cash + pstar*spol(ii,jj,kk) >= delta(ll)*apol(ii,jj,kk) ) then
+                        ! compute liquidations
+                        stilde = delta(ll)*apol(ii,jj)/pstar
 
-                            ! compute liquidations
-                            ctilde = minval( (/ delta(ll)*apol(ii,jj,kk), excess_cash /) )
+                        temp_liq = temp_liq + stilde*prob_d(ll)*F_stationary(ii,jj)
 
-                            if ( ctilde == excess_cash ) then
-                                stilde = (delta(ll)*apol(ii,jj,kk)-ctilde)/pstar
-                            else
-                                stilde = 0d0
-                            endif
+                    else   ! liquidity default
 
-                            temp_liq(1) = temp_liq(1) + ctilde*prob_theta(jj)*prob_d(ll)*F_stationary(ii,jj,kk)
-                            temp_liq(2) = temp_liq(2) + stilde*prob_theta(jj)*prob_d(ll)*F_stationary(ii,jj,kk)
+                        temp_liq = temp_liq + spol(ii,jj)*prob_d(ll)*F_stationary(ii,jj)
 
-                        else   ! liquidity default
-
-                            temp_liq(1) = temp_liq(1) + excess_cash*prob_theta(jj)*prob_d(ll)*F_stationary(ii,jj,kk)
-                            temp_liq(2) = temp_liq(2) + spol(ii,jj,kk)*prob_theta(jj)*prob_d(ll)*F_stationary(ii,jj,kk)
-
-                        endif
-
-                    enddo
+                    endif
 
                 enddo
+
             enddo
         enddo
 
@@ -687,30 +674,26 @@ contains
         agg_a = 0d0
 
         do ii=1,bank_nlen
-            do jj=1,size(theta)
-                do kk=1,dbar_size
+            do jj=1,dbar_size
 
-                    agg_a = agg_a + prob_theta(jj)*F_stationary(ii,jj,kk)*apol(ii,jj,kk)
+                agg_a = agg_a + F_stationary(ii,jj)*apol(ii,jj)
 
-                enddo
             enddo
         enddo
 
         ! compute weighted default rates
         do ii=1,bank_nlen
-            do jj=1,size(theta)
-                do kk=1,dbar_size
+            do jj=1,dbar_size
 
-                    ! compute wholesale weight
-                    wholesale_weight = prob_theta(jj)*F_stationary(ii,jj,kk)*apol(ii,jj,kk)/agg_a
+                ! compute wholesale weight
+                wholesale_weight = F_stationary(ii,jj)*apol(ii,jj)/agg_a
 
-                    ! liquidity default
-                    weighted_def(1) = wholesale_weight*default_liq_prob(ii,jj,kk)
+                ! liquidity default
+                weighted_def(1) = wholesale_weight*default_liq_prob(ii,jj)
 
-                    ! insolvency default
-                    weighted_def(2) = wholesale_weight*(1d0-default_liq_prob(ii,jj,kk))*default_prob(ii,jj,kk)
+                ! insolvency default
+                weighted_def(2) = wholesale_weight*(1d0-default_liq_prob(ii,jj))*default_prob(ii,jj)
 
-                enddo
             enddo
         enddo
 
@@ -730,47 +713,15 @@ contains
         temp_def = 0d0
 
         do ii=1,bank_nlen
-            do jj=1,size(theta)
-                do kk=1,dbar_size
+            do jj=1,dbar_size
 
-                    temp_def(1) = temp_def(1) + prob_theta(jj)*F_stationary(ii,jj,kk)*default_prob(ii,jj,kk)
-                    temp_def(2) = temp_def(2) + prob_theta(jj)*F_stationary(ii,jj,kk)*default_liq_prob(ii,jj,kk)
+                temp_def(1) = temp_def(1) + F_stationary(ii,jj)*default_prob(ii,jj)
+                temp_def(2) = temp_def(2) + F_stationary(ii,jj)*default_liq_prob(ii,jj)
 
-                enddo
             enddo
         enddo
 
         Aggregate_Def = temp_def
-
-    end function
-
-    function Aggregate_Def_Marg()
-
-        implicit none
-
-        ! input/output variables
-        real*8, dimension(size(theta),2) :: Aggregate_Def_Marg
-
-        ! local variables
-        integer :: ii,jj,kk
-        real*8, dimension(2)  :: temp_def
-
-
-        do jj=1,size(theta)
-            temp_def = 0d0
-
-            do ii=1,bank_nlen
-                do kk=1,dbar_size
-
-                    temp_def(1) = temp_def(1) + F_stationary(ii,jj,kk)*default_prob(ii,jj,kk)   !prob_theta(jj)*
-                    temp_def(2) = temp_def(2) + F_stationary(ii,jj,kk)*default_liq_prob(ii,jj,kk) !prob_theta(jj)*
-
-                enddo
-            enddo
-
-            Aggregate_Def_Marg(jj,:) = temp_def
-
-        enddo
 
     end function
 
@@ -792,14 +743,12 @@ contains
         agg_sec  = 0d0
 
         do ii=1,bank_nlen
-            do jj=1,size(theta)
-                do kk=1,dbar_size
+            do jj=1,dbar_size
 
-                    agg_loan = agg_loan + prob_theta(jj)*F_stationary(ii,jj,kk)*lpol(ii,jj,kk)
+                agg_loan = agg_loan + F_stationary(ii,jj)*lpol(ii,jj)
 
-                    agg_sec  = agg_sec  + prob_theta(jj)*F_stationary(ii,jj,kk)*spol(ii,jj,kk)
+                agg_sec  = agg_sec  + F_stationary(ii,jj)*spol(ii,jj)
 
-                enddo
             enddo
         enddo
 
@@ -812,14 +761,12 @@ contains
         agg_whole  = 0d0
 
         do ii=1,bank_nlen
-            do jj=1,size(theta)
-                do kk=1,dbar_size
+            do jj=1,dbar_size
 
-                    agg_dep    = agg_dep + prob_theta(jj)*F_stationary(ii,jj,kk)*dpol(ii,jj,kk)
+                agg_dep    = agg_dep + F_stationary(ii,jj)*dpol(ii,jj)
 
-                    agg_whole  = agg_whole  + prob_theta(jj)*F_stationary(ii,jj,kk)*apol(ii,jj,kk)
+                agg_whole  = agg_whole  + F_stationary(ii,jj)*apol(ii,jj)
 
-                enddo
             enddo
         enddo
 
@@ -833,15 +780,13 @@ contains
         total_rwa = 0d0
 
         do ii=1,bank_nlen
-            do jj=1,size(theta)
-                do kk=1,dbar_size
+            do jj=1,dbar_size
 
-                    total_eq  = total_eq  + prob_theta(jj)*F_stationary(ii,jj,kk)*( lpol(ii,jj,kk) + cpol(ii,jj,kk) +&
-                                spol(ii,jj,kk) - (dpol(ii,jj,kk)+apol(ii,jj,kk)))
+                total_eq  = total_eq  + F_stationary(ii,jj)*( lpol(ii,jj) + cpol(ii,jj) +&
+                            spol(ii,jj) - (dpol(ii,jj)+apol(ii,jj)))
 
-                    total_rwa = total_rwa + prob_theta(jj)*F_stationary(ii,jj,kk)*lpol(ii,jj,kk)
+                total_rwa = total_rwa + F_stationary(ii,jj)*lpol(ii,jj)
 
-                enddo
             enddo
         enddo
 
@@ -861,17 +806,15 @@ contains
         liq_den = 0d0
 
         do ii=1,bank_nlen
-            do jj=1,size(theta)
-                do kk=1,dbar_size
+            do jj=1,dbar_size
 
-                    if (apol(ii,jj,kk) >0d0) then
+                if (apol(ii,jj) >0d0) then
 
-                        liq_num = liq_num + prob_theta(jj)*F_stationary(ii,jj,kk)*(cpol(ii,jj,kk) + (1d0-lr_hair)*spol(ii,jj,kk))
+                    liq_num = liq_num + F_stationary(ii,jj)*( (1d0-lr_hair)*spol(ii,jj))
 
-                        liq_den = liq_den + prob_theta(jj)*F_stationary(ii,jj,kk)*( lr_run*apol(ii,jj,kk) )
-                    endif
+                    liq_den = liq_den + F_stationary(ii,jj)*( lr_run*apol(ii,jj) )
+                endif
 
-                enddo
             enddo
         enddo
 
@@ -880,25 +823,22 @@ contains
         !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
         !    compute deposits shares for bank types 1,2,3    !
         !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
-        do ii =1,size(theta)
 
-            total_liabs  = 0d0
-            total_dep   = 0d0
+        total_liabs  = 0d0
+        total_dep   = 0d0
 
+        do jj=1,dbar_size
+            do kk=1,bank_nlen
 
-            do jj=1,dbar_size
-                do kk=1,bank_nlen
+                total_liabs  = total_liabs  + F_stationary(kk,jj)*( dpol(kk,jj) + &
+                apol(kk,jj) + bank_ngrid(kk) )
 
-                    total_liabs  = total_liabs  + F_stationary(kk,ii,jj)*( dpol(kk,ii,jj) + &
-                    apol(kk,ii,jj) + bank_ngrid(ii,kk) )
-
-                    total_dep  = total_dep  + F_stationary(kk,ii,jj)*dpol(kk,ii,jj)
-                enddo
+                total_dep  = total_dep  + F_stationary(kk,jj)*dpol(kk,jj)
             enddo
-
-            model_moments(5+ii) = 100d0*total_dep/total_liabs
-
         enddo
+
+        model_moments(6) = 100d0*total_dep/total_liabs
+
 
     end function
 
