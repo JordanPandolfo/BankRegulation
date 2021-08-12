@@ -30,15 +30,15 @@ PROGRAM compute_eq
         call tic()
     endif
 
-    dbar_mu = 0.0335536442d0
-    gam        = 0.961326537d0
-    pstar      = 0.971990977d0
-    l_sigma2   = 0.000415561944d0
-    i_s        = .00390620392d0
+    dbar_mu    = 0.0336d0
+    gam        = 0.96d0
+    pstar      = 0.97d0
+    l_sigma2   = 0.000416d0
+    i_s        = .0039d0
 
     beta = gam*beta_pre
 
-    alpha = 0.00021261271199274906
+    alpha = 0.0002126d0
     omega_outside = (no_liq_price/alpha)**(1d0/(alpha-1d0))
 
     bank_nb   = .005d0 !dbar_mu*1.45188876d0*( (l_mu + 2.5d0*l_sigma2**(0.5d0)) - Rd*(1d0-.05d0)  )
@@ -64,7 +64,6 @@ PROGRAM compute_eq
     grid_len = 5
     allocate( lgrid(grid_len) )
     allocate( divgrid(grid_len) )
-    allocate( cgrid(grid_len) )
     allocate( sgrid(grid_len) )
     allocate( dgrid(grid_len) )
     allocate( agrid(grid_len) )
@@ -83,18 +82,13 @@ PROGRAM compute_eq
     call initialize()
 
     call solve_ge()
-
     Agg_Def_stationary = Aggregate_Def()
 
     ! MPI BARRIER
     call MPI_BARRIER(MPI_COMM_WORLD,ierr)
 
-    !~~~~~~~~~~~~~~~~~~~~~~~!
-    !                       !
-    !   Solve Transition    !
-    !                       !
-    !~~~~~~~~~~~~~~~~~~~~~~~!
-
+    ! output
+    call output()
 
     ! MPI BARRIER
     call MPI_BARRIER(MPI_COMM_WORLD,ierr)
@@ -116,7 +110,6 @@ contains
 
         integer :: ii,jj,kk,iterator
         real*8, dimension(bank_nlen) :: temp
-        real*8, dimension(bank_nlen*size(theta)*dbar_size) :: holder
 
         ! inidividual bank networth grid
         call grid_Cons_Grow(bank_ngrid,bank_na,bank_nb,growth)
@@ -199,7 +192,7 @@ contains
 
             Ra_implied = implied_ra_rate()
             Agg_Liq = Aggregate_Liq()
-            pstar_implied = alpha*(Agg_Liq(2)+omega_outside)**(alpha-1d0)
+            pstar_implied = alpha*(Agg_Liq+omega_outside)**(alpha-1d0)
 
             if (my_id==0) then
                 write(*,*)
@@ -278,10 +271,10 @@ contains
         ! input/output variables
 
         ! VFI variables/parameters
-        real*8, parameter :: tol = 1e-14
+        real*8, parameter :: tol = 1e-30
         real*8            :: error
         integer           :: iterator, tt
-        integer, parameter :: it_max = 75
+        integer, parameter :: it_max = 300
 
         ! Solving bank problem
         integer :: ii, jj, kk, ll, mm, nn, oo, pp, qq,rr,ss
@@ -525,7 +518,7 @@ contains
                                     ( lgrid(ll) + sgrid(nn) )
 
                             ! implies a liquidity ratio
-                            liq_temp = ( (1d0-lr_hair)*sgrid(nn) )/( lr_run*implied_a ) !- &
+                            liq_temp = ( (1d0-lr_hair)*sgrid(nn) )/( implied_a ) !- &
                                                 !(1d0-lr_hair)*(1d0+hair)/lr_run
 
                             ! deposit capacity constraint already satisfied
@@ -652,17 +645,15 @@ contains
                 do ll=1,grid_len ! for each loan
                     do oo=1,grid_len   ! for each dividend
 
-                        ! implied wholesale funding
-                        implied_a = (lgrid(ll) + sgrid(mm) )*(1d0-ebar) - dbar(grid_idx(2))
-
                         ! implied securities
                         implied_s =  ( bank_ngrid(grid_idx(1)) - divgrid(oo) - &
                                         ebar*lgrid(ll) - g(lgrid(ll)) )/( ebar )
 
+                        ! implied wholesale funding
+                        implied_a = (lgrid(ll) + implied_s )*(1d0-ebar) - dbar(grid_idx(2))
 
                         ! implied liquidity ratio
-                        liq_temp = ( (1d0-lr_hair)*implied_s )/( lr_run*implied_a ) !- &
-                                                !(1d0-lr_hair)*(1d0+hair)/lr_run
+                        liq_temp = ( (1d0-lr_hair)*implied_s )/( implied_a )
 
                         if (liq_temp < phi_lr) then   ! liquidity requirement
                             v_temp = penalty
@@ -790,7 +781,7 @@ contains
                                     ( 1d0 - (1d0-lr_hair)/phi_lr )
 
                         ! implied wholesale funding
-                        implied_a = (1do-lr_hair)*implied_s/phi_lr
+                        implied_a = (1d0-lr_hair)*implied_s/phi_lr
 
                         ! implied capital ratio
                         e_temp = (lgrid(ll) + implied_s - (dbar(grid_idx(2))+implied_a))/&
@@ -1011,24 +1002,24 @@ contains
                 ! construct grids for control variables
                 if ( ( grid_idx(1) == 1 ).or.( iterator == 1 ) ) then  ! if n_b(1) or first iteratior of value function, use default grids
 
-                    call grid_Cons_Equi( lgrid, la(grid_idx(2)),lb(grid_idx(2)))
+                    call grid_Cons_Equi( lgrid, la,lb)
 
-                    if ( da(grid_idx(2)) >= dbar(grid_idx(2),grid_idx(3))) then
-                        call grid_Cons_Equi( dgrid, .99d0*dbar(grid_idx(2),grid_idx(3)), dbar(grid_idx(2),grid_idx(3)) )
+                    if ( da >= dbar(grid_idx(2))) then
+                        call grid_Cons_Equi( dgrid, .99d0*dbar(grid_idx(2)), dbar(grid_idx(2)) )
                     else
-                        call grid_Cons_Equi( dgrid, da(grid_idx(2)), dbar(grid_idx(2),grid_idx(3)))
+                        call grid_Cons_Equi( dgrid, da, dbar(grid_idx(2)))
                     endif
 
-                    call grid_Cons_Equi( divgrid,diva(grid_idx(2)), divb(grid_idx(2)) )
+                    call grid_Cons_Equi( divgrid,diva, divb )
 
                 else
 
-                    d_bound = maxval( (/ 0.0000001d0, dpol(grid_idx(1)-1,grid_idx(2),grid_idx(3)) - back_look*delta_d /) )
-                    d_ubound = minval( (/ dpol(grid_idx(1)-1,grid_idx(2),grid_idx(3)) + delta_d, dbar(grid_idx(2),grid_idx(3)) /) )
-                    l_bound = maxval( (/ 0.0000001d0, lpol(grid_idx(1)-1,grid_idx(2),grid_idx(3)) - back_look*delta_l /) )
-                    pi_bound = maxval( (/ 0d0, div_pol(grid_idx(1)-1,grid_idx(2),grid_idx(3)) - delta_div /) )
+                    d_bound = maxval( (/ 0.0000001d0, dpol(grid_idx(1)-1,grid_idx(2)) - back_look*delta_d /) )
+                    d_ubound = minval( (/ dpol(grid_idx(1)-1,grid_idx(2)) + delta_d, dbar(grid_idx(2)) /) )
+                    l_bound = maxval( (/ 0.0000001d0, lpol(grid_idx(1)-1,grid_idx(2)) - back_look*delta_l /) )
+                    pi_bound = maxval( (/ 0d0, div_pol(grid_idx(1)-1,grid_idx(2)) - delta_div /) )
 
-                    call grid_Cons_Equi( lgrid, l_bound, lpol(grid_idx(1)-1,grid_idx(2),grid_idx(3)) + delta_l )
+                    call grid_Cons_Equi( lgrid, l_bound, lpol(grid_idx(1)-1,grid_idx(2)) + delta_l )
 
                     if (d_bound >= d_ubound) then
                         call grid_Cons_Equi( dgrid, .99d0*d_bound, d_bound )
@@ -1036,7 +1027,7 @@ contains
                         call grid_Cons_Equi( dgrid, d_bound, d_ubound )
                     endif
 
-                    call grid_Cons_Equi( divgrid, pi_bound , div_pol(grid_idx(1)-1,grid_idx(2),grid_idx(3)) + delta_div )
+                    call grid_Cons_Equi( divgrid, pi_bound , div_pol(grid_idx(1)-1,grid_idx(2)) + delta_div )
 
 
                 endif
@@ -1603,36 +1594,82 @@ contains
 
         implicit none
 
-        real*8, dimension(3) :: port_shares
+        real*8 :: total_assets, total_liabs, total_loan, total_sec, total_debt, total_whole, total_net,total_eq,&
+                  total_rwa, elasticity, roe1_num, roe1_den, roe2_num, roe2_den, s_tilde, net_int, stock, net_temp, &
+                  hold, weighted_spread_num, weighted_spread_den
+
+        real*8, dimension(2) :: roe_size_corr, Agg_Def_Marg, port_shares
         real*8, dimension(3) :: debt_shares
-        real*8 :: total_assets, total_liabs, total_loan, total_cash, total_sec, total_debt, total_whole, total_net
+        real*8, dimension(4) :: al_sheet, holder
+
 
         real*8, dimension(size(data_moms)) :: mod_moms
-        real*8, dimension(5) :: al_sheet
-
-        integer :: ii, jj, kk, ll, mm
-        real*8 :: total_eq, total_rwa, elasticity
-
         real*8, dimension(6) :: size_corr
-        real*8, dimension(8,bank_nlen*dbar_size) :: corr_objs  ! distribution weight, size, risk-weighted equity, leverage, liquidity, ins default, liq default, equity value
-
         real*8, dimension(7) :: size_corr_intra
+        real*8, dimension(8,bank_nlen*dbar_size) :: corr_objs  ! distribution weight, size, risk-weighted equity, leverage, liquidity, ins default, liq default, equity value
         real*8, dimension(9,bank_nlen*dbar_size) :: corr_objs_intra
+        real*8, dimension(2, bank_nlen*dbar_size ) :: roe_stack
+        real*8, dimension(bank_nlen,dbar_size) :: roe_pol1, roe_pol2, lev_pol
 
-        real*8, dimension( 2, bank_nlen*dbar_size ) :: roe_stack
-        real*8, dimension(2) :: roe_size_corr
-        integer :: iterator
-        real*8 :: roe1_num, roe1_den, roe2_num, roe2_den
-        real*8 :: c_tilde, s_tilde, net_int, stock, net_temp
-        real*8, dimension(bank_nlen,dbar_size) :: roe_pol1, roe_pol2
-        real*8 :: weighted_spread_num, weighted_spread_den
-        real*8, dimension(5) :: holder
-        real*8 :: hold
-        real*8, dimension(2) :: Agg_Def_Marg
-
-
+        integer :: ii, jj, kk, ll, mm, iterator
 
         if (my_id==0) then
+
+            !~~~~~~~~~~~!
+            !           !
+            !   Plots   !
+            !           !
+            !~~~~~~~~~~~!
+            ! bank policy functions
+            call plot(bank_ngrid,lpol(:,3),legend='loan',marker=2)
+            call plot(bank_ngrid,spol(:,3),legend='securities')
+            call plot(bank_ngrid,dpol(:,3),legend='deposit')
+            call plot(bank_ngrid,apol(:,3),legend='wholesale')
+            call plot(bank_ngrid,div_pol(:,3),legend='dividends',marker=2)
+            call execplot(title='Bank Policy Functions',filename='policies',filetype='png',output='policies')
+
+            ! deposit policy functions with different dbar
+            call plot(bank_ngrid,dpol(:,1),legend='dbar = 1',marker=2)
+            call plot(bank_ngrid,dpol(:,3),legend='dbar = 3',marker=2)
+            call plot(bank_ngrid,dpol(:,6),legend='dbar = 6',marker=2)
+            call execplot(title='Deposit Policy Functions',filename='deposit',filetype='png',output='deposit')
+
+            ! loan policy functions with different dbar
+            call plot(bank_ngrid,lpol(:,1),legend='dbar = 1',marker=2)
+            call plot(bank_ngrid,lpol(:,3),legend='dbar = 3',marker=2)
+            call plot(bank_ngrid,lpol(:,6),legend='dbar = 6',marker=2)
+            call execplot(title='Loan Policy Functions',filename='loan',filetype='png',output='loan')
+
+            ! wholesale policy functions with different dbar
+            call plot(bank_ngrid,apol(:,1),legend='dbar = 1',marker=2)
+            call plot(bank_ngrid,apol(:,3),legend='dbar = 3',marker=2)
+            call plot(bank_ngrid,apol(:,6),legend='dbar = 6',marker=2)
+            call execplot(title='Wholesale Policy Functions',filename='wholesale',filetype='png',output='wholesale')
+
+            ! dividend policy functions with different dbar
+            call plot(bank_ngrid,div_pol(:,1),legend='dbar = 1',marker=2)
+            call plot(bank_ngrid,div_pol(:,3),legend='dbar = 3',marker=2)
+            call plot(bank_ngrid,div_pol(:,6),legend='dbar = 6',marker=2)
+            call execplot(title='Dividend Policy Functions',filename='dividend',filetype='png',output='dividend')
+
+            ! stationary distribution
+            call plot_hist(bank_ngrid,F_stationary(:,1)        ,legend='dbar=1')
+            call plot_hist(bank_ngrid,F_stationary(:,6)        ,legend='dbar=6')
+            call execplot(title='Stationary Distribution of Networth' ,filename='dist',filetype='png',output='dist')
+
+            ! leverage equity ratio policy function
+            do ii=1,bank_nlen
+                do jj=1,dbar_size
+
+                    lev_pol(ii,jj) = ( lpol(ii,jj) + spol(ii,jj) - dpol(ii,jj) - apol(ii,jj) )/(lpol(ii,jj) + spol(ii,jj))
+
+                enddo
+            enddo
+
+            call plot(bank_ngrid,lev_pol(:,1),legend='dbar = 1',marker=2)
+            call plot(bank_ngrid,lev_pol(:,3),legend='dbar = 3',marker=2)
+            call plot(bank_ngrid,lev_pol(:,6),legend='dbar = 6',marker=2)
+            call execplot(title='Leverage Ratio Policy Function',filename='lev',filetype='png',output='lev')
 
             !~~~~~~~~~~~~~~~~~~~~~~~!
             !                       !
@@ -1678,13 +1715,11 @@ contains
             write(*,*)
             write(*,*) 'securities:', 100d0*al_sheet(2)               ,'        ',25d0
             write(*,*)
-            write(*,*) 'cash:      ', 100d0*al_sheet(3)               ,'        ',5d0
+            write(*,*) 'deposits:  ', 100d0*al_sheet(3)               ,'        ',75d0
             write(*,*)
-            write(*,*) 'deposits:  ', 100d0*al_sheet(4)               ,'        ',75d0
+            write(*,*) 'wholesale: ', 100d0*al_sheet(4)               ,'        ',20d0
             write(*,*)
-            write(*,*) 'wholesale: ', 100d0*al_sheet(5)               ,'        ',20d0
-            write(*,*)
-            write(*,*) 'equity:    ', 100d0*(1d0 - al_sheet(4)-al_sheet(5)),'        ',5d0
+            write(*,*) 'equity:    ', 100d0*(1d0 - al_sheet(3)-al_sheet(4)),'        ',5d0
             write(*,*)
 
             ! compute leverage ratios and size correlations with (i) equity ratios and (ii) liquidity ratios
@@ -1777,8 +1812,8 @@ contains
                     endif
 
                     ! liquidity ratio
-                    if ( lr_run*apol(ii,jj) .ne. 0d0) then
-                        corr_objs(5,iterator) =  ( (1d0-lr_hair)*spol(ii,jj))/( lr_run*apol(ii,jj) )
+                    if ( apol(ii,jj) .ne. 0d0) then
+                        corr_objs(5,iterator) =  ( (1d0-lr_hair)*spol(ii,jj))/( apol(ii,jj) )
                     else
                         corr_objs(5,iterator) =  phi_lr
                     endif
@@ -2050,8 +2085,8 @@ contains
                     endif
 
                     ! liquidity ratio
-                    if ( lr_run*apol(ii,kk) .ne. 0d0) then
-                        corr_objs_intra(5,iterator) =  ( (1d0-lr_hair)*spol(ii,kk))/( lr_run*apol(ii,kk) )
+                    if ( apol(ii,kk) .ne. 0d0) then
+                        corr_objs_intra(5,iterator) =  ( (1d0-lr_hair)*spol(ii,kk))/( apol(ii,kk) )
                     else
                         corr_objs_intra(5,iterator) =  phi_lr
                     endif
@@ -2147,7 +2182,6 @@ contains
             total_assets = 0d0
             total_liabs  = 0d0
             total_loan   = 0d0
-            total_cash   = 0d0
             total_sec    = 0d0
             total_debt   = 0d0
             total_whole  = 0d0
@@ -2157,12 +2191,12 @@ contains
                 do kk=1,bank_nlen
 
                     total_assets = total_assets + F_stationary(kk,jj)*( lpol(kk,jj) + &
-                    + ps*spol(kk,jj) )
+                    spol(kk,jj) )
                     total_liabs  = total_liabs  + F_stationary(kk,jj)*( dpol(kk,jj) + &
                     apol(kk,jj) + bank_ngrid(kk) )
 
                     total_loan = total_loan + F_stationary(kk,jj)*lpol(kk,jj)
-                    total_sec  = total_sec  + F_stationary(kk,jj)*ps*spol(kk,jj)
+                    total_sec  = total_sec  + F_stationary(kk,jj)*spol(kk,jj)
 
                     total_debt  = total_debt  + F_stationary(kk,jj)*dpol(kk,jj)
                     total_whole = total_whole + F_stationary(kk,jj)*apol(kk,jj)
@@ -2171,8 +2205,7 @@ contains
             enddo
 
             port_shares(1) = total_loan/total_assets
-            port_shares(2) = total_cash/total_assets
-            port_shares(3) = total_sec/total_assets
+            port_shares(2) = total_sec/total_assets
 
             debt_shares(1) = total_debt/total_liabs
             debt_shares(2) = total_whole/total_liabs
@@ -2182,8 +2215,7 @@ contains
             write(*,*) 'BANK-LEVEL STATISTICS'
             write(*,*)
             write(*,*) 'Loan portfolio share (%):', 100d0*port_shares(1)
-            write(*,*) 'Cash portfolio share (%):',100d0*port_shares(2)
-            write(*,*) 'Security portfolio share (%):', 100d0*port_shares(3)
+            write(*,*) 'Security portfolio share (%):', 100d0*port_shares(2)
             write(*,*) 'Deposit liability share (%):', 100d0*debt_shares(1)
             write(*,*) 'Wholesale liability share (%):', 100d0*debt_shares(2)
             write(*,*) 'Networth liabiloty share (%):', 100d0*debt_shares(3)
@@ -2199,10 +2231,9 @@ contains
 
             holder    = Aggregate_BS()
             Agg_Loan  = holder(1)
-            Agg_Cash  = holder(2)
-            Agg_Sec   = holder(3)
-            Agg_Dep   = holder(4)
-            Agg_Whole = holder(5)
+            Agg_Sec   = holder(2)
+            Agg_Dep   = holder(3)
+            Agg_Whole = holder(4)
 
 
             write(*,*) 'Aggregates for Comparison to Dodd-Frank Outcomes'
@@ -2211,8 +2242,8 @@ contains
             write(*,*) 'Aggregate Lending:', Agg_Loan
 
             ! agg balance sheet (l + s + c)
-            write(*,*) 'Aggregate Bank Balance Sheet Size:', Agg_Loan + Agg_Sec + Agg_Cash
-            write(*,*) 'Aggregate Balance Sheet Liquidity (%):', 100d0*(Agg_Sec + Agg_Cash)/( Agg_Loan + Agg_Sec + Agg_Cash )
+            write(*,*) 'Aggregate Bank Balance Sheet Size:', Agg_Loan + Agg_Sec
+            write(*,*) 'Aggregate Balance Sheet Liquidity (%):', 100d0*(Agg_Sec )/( Agg_Loan + Agg_Sec )
             write(*,*) 'Aggregate Wholesale Funding:', Agg_Whole
 
             ! agg consumption

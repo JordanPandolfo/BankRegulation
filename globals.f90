@@ -33,7 +33,7 @@ module globals
     real*8, parameter                                  :: tax = .33d0
 
     ! loan cost functions
-    real*8, parameter                    :: theta      = .024d0
+    real*8, parameter                                  :: theta      = .024d0
     real*8, parameter                                  :: nu         = 2d0                                                   ! curvature
 
     ! loan returns
@@ -52,11 +52,11 @@ module globals
     real*8, dimension(dbar_size,dbar_size) :: dbar_prob
 
     ! networth grid
-    real*8           :: nstar
+    real*8, dimension(dbar_size)           :: nstar
     real*8          :: bank_na   ! lower bound
     real*8                    :: bank_nb     ! upper bound
     integer, parameter                                 :: bank_nlen = 40
-    real*8, dimension(bank_nlen)           :: bank_ngrid
+    real*8, dimension(bank_nlen)                       :: bank_ngrid
     real*8, parameter                                  :: growth    =  .1d0 !0.001d0 !.01d0
 
     real*8, parameter                                  :: hair      = -.6995d0  !  29% of wholesale funding is secured with 105% collateral ==> 1.05*.29 = .3045 thus hair = -.6955
@@ -129,7 +129,7 @@ module globals
     integer :: grid_len
     real*8, allocatable, dimension(:) :: lgrid, divgrid, cgrid, sgrid, dgrid, agrid
 
-    real*8, parameter :: la   = 000001d0
+    real*8, parameter :: la   = .000001d0
     real*8, parameter :: aa = la
     real*8, parameter :: sa = la
     real*8, parameter :: da = la
@@ -204,12 +204,11 @@ contains
     end function
 
     !Origination cost
-    function g(x,theta)
+    function g(x)
 
         implicit none
 
         real*8, intent(in) :: x
-        real*8, intent(in) :: theta
         real*8 :: g
 
         g = theta*x**nu/nu
@@ -275,7 +274,7 @@ contains
                                 endif
 
                                 ! if no default
-                                if ( net_temp > nstar ) then
+                                if ( net_temp > nstar(nn) ) then
 
                                     ! record tax income
                                     temp_tax = temp_tax + F_stationary(ii,jj)*prob_d(ll)*prob_l(mm)*&
@@ -337,12 +336,12 @@ contains
             do kk=1,bank_nlen
 
                 total_assets = total_assets + F_stationary(kk,jj)*( lpol(kk,jj) + &
-                ps*spol(kk,jj) )
+                spol(kk,jj) )
                 total_liabs  = total_liabs  + F_stationary(kk,jj)*( dpol(kk,jj) + &
                 apol(kk,jj) + bank_ngrid(kk) )
 
                 total_loan = total_loan + F_stationary(kk,jj)*lpol(kk,jj)
-                total_sec  = total_sec  + F_stationary(kk,jj)*ps*spol(kk,jj)
+                total_sec  = total_sec  + F_stationary(kk,jj)*spol(kk,jj)
 
                 total_debt  = total_debt  + F_stationary(kk,jj)*dpol(kk,jj)
                 total_whole = total_whole + F_stationary(kk,jj)*apol(kk,jj)
@@ -400,7 +399,7 @@ contains
 
         ! money market sector
         real*8 :: agg_a, obj1, obj2, obj3, obj4, temp_net, rtilde_a
-        real*8, dimension(bank_nlen,size(theta),dbar_size) :: bshare
+        real*8, dimension(bank_nlen,dbar_size) :: bshare
         real*8 :: excess_cash, net_int, stock
 
         ! compute aggregate dividends from banking sector
@@ -462,7 +461,7 @@ contains
                                     temp_net = net_int + stock
                                 endif
 
-                                if ( temp_net < nstar ) then
+                                if ( temp_net < nstar(nn) ) then
                                     obj3 = obj3 + bshare(ii,kk)*prob_d(ll)*(1d0-delta(ll))*prob_l(mm)*dbar_prob(kk,nn) ! insolvency default cash flow
                                 else
                                     obj4 = obj4 + bshare(ii,kk)*prob_d(ll)*(1d0-delta(ll))*prob_l(mm)*dbar_prob(kk,nn)  ! repayment cash flow
@@ -583,7 +582,7 @@ contains
                                 endif
 
                                 ! if insolvency default
-                                if ( net_temp <= nstar ) then
+                                if ( net_temp <= nstar(nn) ) then
 
                                     ! in insolvency default, assets (l+s) have interest maturity
                                     liq_assets = liq*( Rl(mm)*lpol(ii,kk) + (1d0+i_s)*(spol(ii,kk)-stilde) -&
@@ -624,7 +623,7 @@ contains
         integer, dimension(1) :: min_idx
         real*8 :: r_thresh
         real*8 :: def_diff, excess_cash, net_temp, liq_assets, stilde, ctilde
-        real*8, dimension(2) :: temp_liq
+        real*8 :: temp_liq
 
         ! initialize
         temp_liq = 0d0
@@ -782,7 +781,7 @@ contains
         do ii=1,bank_nlen
             do jj=1,dbar_size
 
-                total_eq  = total_eq  + F_stationary(ii,jj)*( lpol(ii,jj) + cpol(ii,jj) +&
+                total_eq  = total_eq  + F_stationary(ii,jj)*( lpol(ii,jj) +&
                             spol(ii,jj) - (dpol(ii,jj)+apol(ii,jj)))
 
                 total_rwa = total_rwa + F_stationary(ii,jj)*lpol(ii,jj)
@@ -812,7 +811,7 @@ contains
 
                     liq_num = liq_num + F_stationary(ii,jj)*( (1d0-lr_hair)*spol(ii,jj))
 
-                    liq_den = liq_den + F_stationary(ii,jj)*( lr_run*apol(ii,jj) )
+                    liq_den = liq_den + F_stationary(ii,jj)*( apol(ii,jj) )
                 endif
 
             enddo
