@@ -30,7 +30,7 @@ PROGRAM compute_eq
         call tic()
     endif
 
-    dbar_mu    = 0.0336d0
+    kappa      = 0d0
     gam        = 0.96d0
     pstar      = 0.97d0
     l_sigma2   = 0.000416d0
@@ -41,16 +41,27 @@ PROGRAM compute_eq
     alpha = 0.0002126d0
     omega_outside = (no_liq_price/alpha)**(1d0/(alpha-1d0))
 
-    bank_nb   = .005d0 !dbar_mu*1.45188876d0*( (l_mu + 2.5d0*l_sigma2**(0.5d0)) - Rd*(1d0-.05d0)  )
+    ! relevant state space and VFI grid search parameters
+    !
+    !   - determine ub of networth state space, and ub of deposit state space's relation to it
+    !
+    !   - determine width of grid search for policy functions
+    !
+    !   - determine # of state space grid points + # of grid search grid points
+    !
+    !   - determine max VFI iterations and VFI convergence criterion
+    !
+    bank_nb   = .01d0       ! upper bound of state space
+    bank_db   = bank_nb*(1d0-ebar)/ebar  ! upper bound of state space
 
+    delta_l   = 20d0*( bank_nb )/bank_nlen   ! local search window for policy function grid search
 
-    delta_l   = 20d0*( bank_nb )/bank_nlen
-
-    delta_div = delta_l*.1d0
+    delta_div = delta_l*.5d0
     delta_a   = delta_l*1d0
     delta_d   = delta_l*1d0
     delta_s   = delta_l*1d0
-    delta_c   = delta_l*.25d0
+
+    grid_len = 5
 
     ! MPI BARRIER
     call MPI_BARRIER(MPI_COMM_WORLD,ierr)
@@ -61,7 +72,6 @@ PROGRAM compute_eq
     !                                   !
     !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
 
-    grid_len = 5
     allocate( lgrid(grid_len) )
     allocate( divgrid(grid_len) )
     allocate( sgrid(grid_len) )
@@ -113,28 +123,17 @@ contains
 
         ! inidividual bank networth grid
         call grid_Cons_Grow(bank_ngrid,bank_na,bank_nb,growth)
+        call grid_Cons_Grow(bank_dgrid,bank_da,bank_db,dgrowth)
 
         ! initialize value function
         do ii = 1,bank_nlen
-            do kk=1,dbar_size
+            do kk=1,bank_dlen
                 v(ii,kk) =  bank_ngrid(ii)
             enddo
         enddo
 
         do ii=1,bank_nlen
             temp(ii) = ii
-        enddo
-
-        ! create identity matrix id_mat
-        id_mat = 0d0
-        do ii=1,bank_nlen*dbar_size
-            do jj=1,bank_nlen*dbar_size
-
-                if (ii==jj) then
-                    id_mat(ii,jj) = 1d0
-                endif
-
-            enddo
         enddo
 
         call normal_discrete( Rl, prob_l, l_mu, l_sigma2)
@@ -147,19 +146,6 @@ contains
             write(*,*) 'Prob Rl:', prob_l
             write(*,*)
         endif
-
-        !call normal_discrete(Rl,prob_l,l_mu,l_sigma2)
-
-        ! set deposit capacity constraints and probabilities
-        dbar = dbar_mu*( 1d0 + (/ -0.45188876,-0.27113325,-0.09037775,0.09037775,0.27113325,0.45188876 /) )
-
-        dbar_prob(1,:) = (/ 3.6355770e-01,4.0356710e-01,1.9755536e-01,3.3369986e-02,1.9130819e-03,3.6768955e-05 /)
-        dbar_prob(2,:) = (/ 1.4184205e-01,3.6066970e-01,3.5845480e-01,1.2376471e-01,1.4674066e-02,5.9467011e-04 /)
-        dbar_prob(3,:) = (/ 3.6311337e-02,2.0043165e-01,4.0441560e-01,2.8389830e-01,6.9047132e-02,5.8959822e-03 /)
-        dbar_prob(4,:) = (/ 5.8959822e-03,6.9047132e-02,2.8389830e-01,4.0441560e-01,2.0043165e-01,3.6311337e-02 /)
-        dbar_prob(5,:) = (/ 5.9467011e-04,1.4674066e-02,1.2376471e-01,3.5845480e-01,3.6066970e-01,1.4184205e-01 /)
-        dbar_prob(6,:) = (/ 3.6768955e-05,1.9130819e-03,3.3369986e-02,1.9755536e-01,4.0356710e-01,3.6355770e-01 /)
-
 
     end subroutine
 
@@ -239,11 +225,11 @@ contains
 
         ! compute balancing period policy functions
         integer :: ii,jj,kk,ll
-        real*8, dimension(bank_nlen,dbar_size,size(delta)) :: ctilde, stilde
+        real*8, dimension(bank_nlen,bank_dlen,size(delta)) :: ctilde, stilde
         real*8 :: excess_cash
 
         do ii=1,bank_nlen
-            do kk=1,dbar_size
+            do kk=1,bank_dlen
 
                 do ll=1,size(delta)
 
@@ -274,38 +260,38 @@ contains
         real*8, parameter :: tol = 1e-30
         real*8            :: error
         integer           :: iterator, tt
-        integer, parameter :: it_max = 300
+        integer, parameter :: it_max = 100
 
         ! Solving bank problem
-        integer :: ii, jj, kk, ll, mm, nn, oo, pp, qq,rr,ss
+        integer :: ii, jj, kk, ll, mm, nn, oo, pp, qq,rr,ss,zz
         real*8 :: v_temp, RHS, net_temp, e_temp
-        real*8, dimension(6) :: v_curr_max, l_curr_max, d_curr_max, div_curr_max, s_curr_max, a_curr_max
+        real*8, dimension(5) :: v_curr_max, l_curr_max, d_curr_max, div_curr_max, s_curr_max, a_curr_max
         real*8 :: a_bound, l_bound, s_bound, d_bound, liq_temp, implied_a, &
-                  implied_s, implied_c, d_ubound, implied_d, implied_l, implied_div
+                  implied_s, d_ubound, implied_d, implied_l, implied_div
         real*8 :: s_tilde  ! liquidation values
         integer, dimension(1) :: v_idx
         real*8 :: net_int, stock, pi_bound
         real*8 :: temp_pen
 
         ! linear interpolation variables
-        integer :: ixl, ixr
-        real*8  :: varphi
+        integer :: ixl, ixr, iyl, iyr
+        real*8  :: phix, phiy
 
         ! spline interpolation variables
-        real*8, dimension( dbar_size, bank_nlen+2 ) :: coeff
+        real*8, dimension( bank_dlen+2, bank_nlen+2 ) :: coeff
 
         !---------------!
         !   mpi stuff   !
         !---------------!
         real*8, allocatable, dimension(:) :: ltemp, dtemp, stemp, atemp, divtemp, vtemp, ctemp
         real*8, allocatable, dimension(:) :: ltemp_all, dtemp_all, stemp_all, atemp_all, divtemp_all, vtemp_all, ctemp_all
-        integer, dimension(2) :: grid_idx   ! 2 states (nb,dbar)
+        integer, dimension(2) :: grid_idx   ! 2 states (nb,do)
         integer, allocatable, dimension(:,:,:) :: idx_full_grid
 
         integer :: total_grid, proc_len
 
         ! total size of state space grid
-        total_grid = bank_nlen*dbar_size
+        total_grid = bank_nlen*bank_dlen
 
         if ( mod(total_grid,nprocs) == 0) then  ! perfect fit
             proc_len = total_grid/nprocs
@@ -347,189 +333,194 @@ contains
             !---------------------------!
             !   solve value function    !
             !---------------------------!
-            do ii=1,proc_len  ! for each point in parallel grid; state space = (bank ngrid, theta, dbar)
+            do ii=1,proc_len  ! for each point in parallel grid; state space = (bank ngrid, do)
 
                 ! determine indices for bank state space
                 grid_idx = idx_full_grid(my_id+1,ii,:)
-                !
-                !
-                !    Case 1: binding capital requirement
-                !
-                !    implication:   I) d = ( l + s )*(1-ebar)
-                !
-                !                  II) s = ( n - theta*l^2/2 - div - ebar*l )/ebar
-                !
-                !                 III) a = 0
-                !
-                !    search over: (l,div)
-                !
-                !
+
+                ! initialize current problem
+                v_curr_max   = 0d0
+                l_curr_max   = 0d0
+                d_curr_max   = 0d0
+                div_curr_max = 0d0
+                s_curr_max   = 0d0
+                a_curr_max   = 0d0
 
                 ! construct grids for control variables
-                if ( ( grid_idx(1) == 1 ).or.( iterator == 1 ) ) then  ! if n_b(1) or first iteratior of value function, use default grids
+                if ( ( grid_idx(1) == 1 ).or.( grid_idx(2) == 1 ).or.( iterator == 1 ) ) then  ! if n_b(1) or first iteratior of value function, use default grids
 
-                    call grid_Cons_Equi( lgrid, la,lb   )
+                    call grid_Cons_Equi( lgrid, la,lb)
+                    call grid_Cons_Equi( sgrid, sa, sb )
+                    call grid_Cons_Equi( dgrid, da,db)
+                    call grid_Cons_Equi( agrid, aa,ab)
                     call grid_Cons_Equi( divgrid,diva, divb )
 
                 else
 
-                    l_bound = maxval( (/ 0.0000001d0, lpol(grid_idx(1)-1,grid_idx(2)) - back_look*delta_l /) )
-                    pi_bound = maxval( (/ 0d0, div_pol(grid_idx(1)-1,grid_idx(2)) - delta_div /) )
+                    d_bound = maxval( (/ 0.0000001d0, dpol(grid_idx(1)-1,grid_idx(2)-1) - back_look*delta_d /) )
+                    a_bound = maxval( (/ 0.0000001d0, apol(grid_idx(1)-1,grid_idx(2)-1) - back_look*delta_a /) )
+                    l_bound = maxval( (/ 0.0000001d0, lpol(grid_idx(1)-1,grid_idx(2)-1) - back_look*delta_l /) )
+                    pi_bound = maxval( (/ 0d0, div_pol(grid_idx(1)-1,grid_idx(2)-1) - delta_div /) )
+                    s_bound = maxval( (/ 0.0000001d0, spol(grid_idx(1)-1,grid_idx(2)) - back_look*delta_s /) )
 
-                    call grid_Cons_Equi( lgrid, l_bound, lpol(grid_idx(1)-1,grid_idx(2)) + delta_l )
-                    call grid_Cons_Equi( divgrid, pi_bound , div_pol(grid_idx(1)-1,grid_idx(2)) + delta_div )
+                    call grid_Cons_Equi( lgrid, l_bound, lpol(grid_idx(1)-1,grid_idx(2)-1) + delta_l )
+                    call grid_Cons_Equi( dgrid, d_bound, dpol(grid_idx(1)-1,grid_idx(2)-1) + delta_d )
+                    call grid_Cons_Equi( agrid, a_bound, apol(grid_idx(1)-1,grid_idx(2)-1) + delta_a )
+                    call grid_Cons_Equi( divgrid, pi_bound , div_pol(grid_idx(1)-1,grid_idx(2)-1) + delta_div )
+                    call grid_Cons_Equi( sgrid, s_bound, spol(grid_idx(1)-1,grid_idx(2)) + delta_s )
 
                 endif
 
-                ! initialize current problem
-                v_curr_max(1)   = 0d0
-                l_curr_max(1)   = 0d0
-                d_curr_max(1)   = 0d0
-                div_curr_max(1) = 0d0
-                s_curr_max(1)   = 0d0
-                a_curr_max(1)   = 0d0
+                !
+                !
+                !    Case 1: binding capital requirement
+                !
+                !    implication:   I) d = ( l + s )*(1-ebar) - a
+                !
+                !                  II) div = n + a + d + Phi(do,d) - l- theta*l^2/2 - s
+                !
+                !    search over: (l,s,a) --> d --> div
+                !
+                !
 
                 ! solve problem
                 do ll=1,grid_len ! for each loan
-                    do oo=1,grid_len   ! for each dividend
+                    do ss=1,grid_len   ! for each security
+                        do zz=1,grid_len   ! for each wholesale
 
-                        ! implied securities
-                        implied_s =  ( bank_ngrid(grid_idx(1)) - divgrid(oo) - &
-                                       ebar*lgrid(ll) - g(lgrid(ll)) )/ebar
+                            ! implied deposits
+                            implied_d = (lgrid(ll) + sgrid(ss) )*(1d0-ebar) - agrid(zz)
 
-                        implied_d = (lgrid(ll) + implied_s )*(1d0-ebar)
+                            ! implied dividends
+                            implied_div =  bank_ngrid(grid_idx(1)) + agrid(zz)  + implied_d +&
+                                           phid(bank_dgrid(grid_idx(2)),implied_d) -lgrid(ll) -&
+                                           g(lgrid(ll)) - sgrid(ss)
 
-                        ! implied wholesale funding
-                        implied_a = 0d0
+                            ! liquidity requirement
+                            liq_temp = ( (1d0-lr_hair)*sgrid(ss) )/agrid(zz)
 
-                        ! liquidity requirement naturally satisfied
+                            if (implied_d < 0d0) then
+                                v_temp = penalty
+                            elseif (implied_div < 0d0) then
+                                v_temp = penalty
+                            elseif (liq_temp < phi_lr) then
+                                v_temp = penalty
+                            elseif ( sgrid(ss) < (1d0+hair)*agrid(zz)) then  ! collateral constraint
+                                v_temp = penalty
+                            else               ! if all constraints satisfied
 
-                        if (implied_d < 0d0) then
-                            v_temp = penalty
-                        elseif (implied_d > dbar(grid_idx(2))) then   ! liquidity requirement
-                            v_temp = penalty
-                        elseif (implied_s < 0d0) then     ! negative securities
-                            v_temp = penalty
-                        else               ! if all constraints satisfied
+                                ! initialize RHS of bellman equation
+                                RHS = 0d0
 
-                            ! initialize RHS of bellman equation
-                            RHS = 0d0
+                                ! for each possible funding shock
+                                do qq=1,size(delta)
 
-                            ! no funding risk
-                            do rr=1,size(Rl)        ! for each next period loan shock
-                                do ss=1,dbar_size  ! and each deposit funding shock
+                                    ! check liquidity default
+                                    if ( pstar*sgrid(ss) >= delta(qq)*agrid(zz)) then
 
-                                    ! compute networth
-                                    net_int = (Rl(rr)-1d0)*lgrid(ll) + i_s*implied_s - (Rd-1d0)*implied_d
+                                        s_tilde = ( delta(qq)*agrid(zz) )/pstar
 
-                                    stock = lgrid(ll) + implied_s - implied_d
+                                        ! no funding risk
+                                        do rr=1,size(Rl)        ! for each next period loan shock
 
-                                    if ( net_int > 0d0) then
-                                        net_temp = (1d0-tax)*net_int + stock
-                                    else
-                                        net_temp = net_int + stock
+                                            ! compute networth
+                                            net_int = (Rl(rr)-1d0)*lgrid(ll) + i_s*(sgrid(ss)-s_tilde) -&
+                                                      (Rd-1d0)*implied_d -(Ra-1d0)*(1d0-delta(qq))*agrid(zz)
+
+                                            stock = lgrid(ll) + (sgrid(ss)-s_tilde) - implied_d - (1d0-delta(qq))*agrid(zz)
+
+                                            if ( net_int > 0d0) then
+                                                net_temp = (1d0-tax)*net_int + stock
+                                            else
+                                                net_temp = net_int + stock
+                                            endif
+
+                                            if (net_temp >0d0) then
+
+                                                ! linear interpolate for value
+                                                call linint_Grow( net_temp, bank_na, bank_nb,&
+                                                                    growth,bank_nlen-1, ixl, ixr, phix)
+
+                                                call linint_Grow( implied_d, bank_da, bank_db,&
+                                                                    dgrowth,bank_dlen-1, iyl, iyr, phiy)
+
+                                                if (phix <= phiy) then
+
+                                                    v_temp = phix*v(ixl+1,iyl+1) +&
+                                                             (phiy-phix)*v(ixr+1,iyl+1) +&
+                                                             (1d0-phiy)*v(ixr+1,iyr+1)
+
+                                                else
+
+                                                    v_temp = phiy*v(ixl+1,iyl+1) +&
+                                                             (phix-phiy)*v(ixl+1,iyr+1) +&
+                                                             (1d0-phix)*v(ixr+1,iyr+1)
+
+                                                endif
+
+                                                RHS = RHS + prob_d(qq)*prob_l(rr)*v_temp
+                                            endif
+
+                                        enddo
                                     endif
-
-                                    if (net_temp >0d0) then
-
-                                        ! linear interpolate for value
-                                        call linint_Grow( net_temp, bank_na, bank_nb,&
-                                                            growth,bank_nlen-1, ixl, ixr, varphi)
-
-                                        v_temp = ( varphi*v(ixl+1,ss) + &
-                                                    (1d0-varphi)*v(ixr+1,ss) )
-
-                                        RHS = RHS + prob_l(rr)*dbar_prob(grid_idx(2),ss)*v_temp
-                                    endif
-
                                 enddo
-                            enddo
 
-                            v_temp = divgrid(oo) + beta*RHS
+                                v_temp = implied_div + beta*RHS
 
-                        endif
+                            endif
 
-                        ! evaluate value of policy function combination
-                        if (v_temp > v_curr_max(1)) then! if beats current, create new argmax and max value
+                            ! evaluate value of policy function combination
+                            if (v_temp > v_curr_max(1)) then! if beats current, create new argmax and max value
 
-                            v_curr_max(1) = v_temp
+                                v_curr_max(1)   = v_temp
 
-                            l_curr_max(1)   = lgrid(ll)
-                            s_curr_max(1)   = implied_s
-                            d_curr_max(1)   = implied_d
-                            a_curr_max(1)   = 0d0
-                            div_curr_max(1) = divgrid(oo)
+                                l_curr_max(1)   = lgrid(ll)
+                                s_curr_max(1)   = sgrid(ss)
+                                d_curr_max(1)   = implied_d
+                                a_curr_max(1)   = agrid(zz)
+                                div_curr_max(1) = implied_div
 
-                        endif
-
+                            endif
+                        enddo
                     enddo
                 enddo  ! end of policy function loop
 
                 !
                 !
-                !    Case 2: binding deposit capacity constraint
+                !    Case 2: binding liquidity requirement
                 !
-                !    implication:   I) d = dbar
+                !    implication:   I) a = (1-h_s)*s/phi_lr
                 !
-                !                  II) a = s + l + theta*l**2/2 + div - n - dbar
+                !                  II) div = n + a + d + Phi(do,d) - l- theta*l^2/2 - s
                 !
-                !    search over: (l,s,div) --> a
+                !    search over: (l,s,d) --> a --> div
                 !
                 !
-                ! construct grids for control variables
-                if ( ( grid_idx(1) == 1 ).or.( iterator == 1 ) ) then  ! if n_b(1) or first iteratior of value function, use default grids
-
-                    call grid_Cons_Equi( lgrid, la,lb)
-                    call grid_Cons_Equi( sgrid, sa, sb)
-                    call grid_Cons_Equi( divgrid,diva, divb )
-
-                else
-
-                    l_bound = maxval( (/ 0.0000001d0, lpol(grid_idx(1)-1,grid_idx(2)) - back_look*delta_l /) )
-                    s_bound = maxval( (/ 0.0000001d0, spol(grid_idx(1)-1,grid_idx(2)) - back_look*delta_s /) )
-                    pi_bound = maxval( (/ 0d0, div_pol(grid_idx(1)-1,grid_idx(2)) - delta_div /) )
-
-                    call grid_Cons_Equi( lgrid, l_bound, lpol(grid_idx(1)-1,grid_idx(2)) + delta_l )
-                    call grid_Cons_Equi( sgrid, s_bound, spol(grid_idx(1)-1,grid_idx(2)) + delta_s )
-                    call grid_Cons_Equi( divgrid, pi_bound , div_pol(grid_idx(1)-1,grid_idx(2)) + delta_div )
-
-                endif
-
-                ! initialize current problem
-                v_curr_max(2)   = 0d0
-                l_curr_max(2)   = 0d0
-                d_curr_max(2)   = 0d0
-                div_curr_max(2) = 0d0
-                s_curr_max(2)   = 0d0
-                a_curr_max(2)   = 0d0
 
                 ! solve problem
                 do ll=1,grid_len ! for each loan
-                    do oo=1,grid_len   ! for each dividend
+                    do oo=1,grid_len   ! for each deposit
                         do nn=1,grid_len  ! for each security
 
                             ! implies wholesale funding
-                            implied_a = sgrid(nn) + lgrid(ll) + g(lgrid(ll)) + &
-                                        divgrid(oo) - &
-                                        bank_ngrid(grid_idx(1)) - dbar(grid_idx(2))
+                            implied_a = (1d0-lr_hair)*sgrid(nn)/phi_lr
+
+                            ! implied dividend
+                            implied_div =  bank_ngrid(grid_idx(1)) + implied_a  + dgrid(oo) +&
+                                           phid(bank_dgrid(grid_idx(2)),dgrid(oo)) -lgrid(ll) -&
+                                           g(lgrid(ll)) - sgrid(nn)
 
                             ! implied capital ratio
-                            e_temp = (lgrid(ll) + sgrid(nn) - (dbar(grid_idx(2))+implied_a))/&
+                            e_temp = (lgrid(ll) + sgrid(nn) - (dgrid(oo)+implied_a))/&
                                     ( lgrid(ll) + sgrid(nn) )
-
-                            ! implies a liquidity ratio
-                            liq_temp = ( (1d0-lr_hair)*sgrid(nn) )/( implied_a ) !- &
-                                                !(1d0-lr_hair)*(1d0+hair)/lr_run
-
-                            ! deposit capacity constraint already satisfied
 
                             if (e_temp > 1d0) then ! capital requirement (above)
                                 v_temp = penalty
                             elseif (e_temp < ebar) then ! capital requirement (below)
                                 v_temp = penalty
-                            elseif (liq_temp < phi_lr) then   ! liquidity requirement
+                            elseif (implied_a < 0d0) then   ! liquidity requirement
                                 v_temp = penalty
-                            elseif (implied_a < 0d0) then     ! negative wholesale funding
+                            elseif (implied_div < 0d0) then     ! negative wholesale funding
                                 v_temp = penalty
                             elseif ( sgrid(nn) < (1d0+hair)*implied_a) then  ! collateral constraint
                                 v_temp = penalty
@@ -547,41 +538,52 @@ contains
                                         s_tilde = ( delta(qq)*implied_a )/pstar
 
                                         do rr=1,size(Rl)        ! for each next period loan shock
-                                            do ss=1,dbar_size  ! and each deposit funding shock
 
-                                                ! compute networth
-                                                net_int = (Rl(rr)-1d0)*lgrid(ll) + i_s*(sgrid(nn)-s_tilde) - &
-                                                          (Rd-1d0)*dbar(grid_idx(2)) - &
-                                                          (Ra-1d0)*(1d0-delta(qq))*implied_a
+                                            ! compute networth
+                                            net_int = (Rl(rr)-1d0)*lgrid(ll) + i_s*(sgrid(nn)-s_tilde) - &
+                                                      (Rd-1d0)*dgrid(oo) - &
+                                                      (Ra-1d0)*(1d0-delta(qq))*implied_a
 
-                                                stock = lgrid(ll) + (sgrid(nn)-s_tilde) - &
-                                                        dbar(grid_idx(2)) - (1d0-delta(qq))*implied_a
+                                            stock = lgrid(ll) + (sgrid(nn)-s_tilde) - &
+                                                    dgrid(oo) - (1d0-delta(qq))*implied_a
 
-                                                if ( net_int > 0d0) then
-                                                    net_temp = (1d0-tax)*net_int + stock
+                                            if ( net_int > 0d0) then
+                                                net_temp = (1d0-tax)*net_int + stock
+                                            else
+                                                net_temp = net_int + stock
+                                            endif
+
+                                            if (net_temp>0d0) then
+                                                ! linear interpolate for value
+                                                call linint_Grow( net_temp, bank_na, bank_nb,&
+                                                                    growth,bank_nlen-1, ixl, ixr, phix)
+
+                                                call linint_Grow( dgrid(oo), bank_da, bank_db,&
+                                                                    dgrowth,bank_dlen-1, iyl, iyr, phiy)
+
+                                                if (phix <= phiy) then
+
+                                                    v_temp = phix*v(ixl+1,iyl+1) +&
+                                                             (phiy-phix)*v(ixr+1,iyl+1) +&
+                                                             (1d0-phiy)*v(ixr+1,iyr+1)
+
                                                 else
-                                                    net_temp = net_int + stock
+
+                                                    v_temp = phiy*v(ixl+1,iyl+1) +&
+                                                             (phix-phiy)*v(ixl+1,iyr+1) +&
+                                                             (1d0-phix)*v(ixr+1,iyr+1)
+
                                                 endif
 
-                                                if (net_temp>0d0) then
-                                                    ! linear interpolate for value
-                                                    call linint_Grow( net_temp, bank_na, bank_nb,&
-                                                                        growth,bank_nlen-1, ixl, ixr, varphi)
+                                                RHS = RHS + prob_d(qq)*prob_l(rr)*v_temp
+                                            endif
 
-                                                    v_temp = ( varphi*v(ixl+1,ss) + &
-                                                                (1d0-varphi)*v(ixr+1,ss) )
-
-                                                    RHS = RHS + prob_d(qq)*prob_l(rr)*&
-                                                                dbar_prob(grid_idx(2),ss)*v_temp
-                                                endif
-
-                                            enddo
                                         enddo
                                     endif
 
                                 enddo
 
-                                v_temp = divgrid(oo) + beta*RHS
+                                v_temp = implied_div + beta*RHS
 
                             endif
 
@@ -593,9 +595,9 @@ contains
 
                                 l_curr_max(2)   = lgrid(ll)
                                 s_curr_max(2)   = sgrid(nn)
-                                d_curr_max(2)   = dbar(grid_idx(2))
+                                d_curr_max(2)   = dgrid(oo)
                                 a_curr_max(2)   = implied_a
-                                div_curr_max(2) = divgrid(oo)
+                                div_curr_max(2) = implied_div
 
                             endif
 
@@ -605,63 +607,41 @@ contains
 
                 !
                 !
-                !    Case 3: binding capital & deposit capacity constraint
+                !    Case 3: binding capital & liquidity requirement
                 !
-                !    implication:   I) d = dbar
+                !    implication:   I) s = phi_lr*a/(1-h_s)
                 !
-                !                  II) a = ( l + s )*(1-ebar) - dbar
+                !                  II) l = (a+d)/(1-e) - s
                 !
-                !                 III) s = ( n - theta*l^2/2 - div - ebar*l )/ebar
-                !
-                !
-                !    search over: (l,div)   --> s --> a
+                !                 III) div = n + a + d + Phi(do,d) - l- theta*l^2/2 - s
                 !
                 !
-                ! construct grids for control variables
-                if ( ( grid_idx(1) == 1 ).or.( iterator == 1 ) ) then  ! if n_b(1) or first iteratior of value function, use default grids
-
-                    call grid_Cons_Equi( lgrid, la,lb)
-                    call grid_Cons_Equi( divgrid,diva, divb )
-
-                else
-
-                    l_bound = maxval( (/ 0.0000001d0, lpol(grid_idx(1)-1,grid_idx(2)) - back_look*delta_l /) )
-                    pi_bound = maxval( (/ 0d0, div_pol(grid_idx(1)-1,grid_idx(2)) - delta_div /) )
-
-                    call grid_Cons_Equi( lgrid, l_bound, lpol(grid_idx(1)-1,grid_idx(2)) + delta_l )
-                    call grid_Cons_Equi( divgrid, pi_bound , div_pol(grid_idx(1)-1,grid_idx(2)) + delta_div )
-
-                endif
-
-                ! initialize current problem
-                v_curr_max(3)   = 0d0
-                l_curr_max(3)   = 0d0
-                d_curr_max(3)   = 0d0
-                div_curr_max(3) = 0d0
-                s_curr_max(3)   = 0d0
-                a_curr_max(3)   = 0d0
+                !    search over: (a,d)   --> s --> l --> div
+                !
+                !
 
                 ! solve problem
-                do ll=1,grid_len ! for each loan
-                    do oo=1,grid_len   ! for each dividend
+                do ll=1,grid_len ! for each wholesale
+                    do oo=1,grid_len   ! for deposit
 
                         ! implied securities
-                        implied_s =  ( bank_ngrid(grid_idx(1)) - divgrid(oo) - &
-                                        ebar*lgrid(ll) - g(lgrid(ll)) )/( ebar )
+                        implied_s =  phi_lr*agrid(ll)/(1d0-lr_hair)
 
-                        ! implied wholesale funding
-                        implied_a = (lgrid(ll) + implied_s )*(1d0-ebar) - dbar(grid_idx(2))
+                        ! implied loans
+                        implied_l = (agrid(ll) + dgrid(oo))/(1d0-ebar) - implied_s
 
-                        ! implied liquidity ratio
-                        liq_temp = ( (1d0-lr_hair)*implied_s )/( implied_a )
+                        ! implied dividends
+                        implied_div =  bank_ngrid(grid_idx(1)) + agrid(ll)  + dgrid(oo) +&
+                                           phid(bank_dgrid(grid_idx(2)),dgrid(oo)) -implied_l -&
+                                           g(implied_l) - implied_s
 
-                        if (liq_temp < phi_lr) then   ! liquidity requirement
+                        if (implied_s < 0d0) then   ! liquidity requirement
                             v_temp = penalty
-                        elseif (implied_a < 0d0) then     ! negative wholesale funding
+                        elseif (implied_div < 0d0) then
                             v_temp = penalty
-                        elseif (implied_s < 0d0) then     ! negative securities
+                        elseif (implied_l < 0d0) then     ! negative wholesale funding
                             v_temp = penalty
-                        elseif ( implied_s < (1d0+hair)*implied_a) then  ! collateral constraint
+                        elseif ( implied_s < (1d0+hair)*agrid(ll)) then  ! collateral constraint
                             v_temp = penalty
                         else               ! if all constraints satisfied
 
@@ -672,47 +652,58 @@ contains
                             do qq=1,size(delta)
 
                                 ! check liquidity default
-                                if ( pstar*implied_s >= delta(qq)*implied_a) then
+                                if ( pstar*implied_s >= delta(qq)*agrid(ll)) then
 
-                                    s_tilde = ( delta(qq)*implied_a )/pstar
+                                    s_tilde = ( delta(qq)*agrid(ll) )/pstar
 
                                     do rr=1,size(Rl)        ! for each next period loan shock
-                                        do ss=1,dbar_size  ! and each deposit funding shock
 
-                                            ! compute networth
-                                            net_int = (Rl(rr)-1d0)*lgrid(ll) + i_s*(implied_s-s_tilde) - &
-                                                      (Rd-1d0)*dbar(grid_idx(2)) - &
-                                                      (Ra-1d0)*(1d0-delta(qq))*implied_a
+                                        ! compute networth
+                                        net_int = (Rl(rr)-1d0)*implied_l + i_s*(implied_s-s_tilde) - &
+                                                  (Rd-1d0)*dgrid(oo) - &
+                                                  (Ra-1d0)*(1d0-delta(qq))*agrid(ll)
 
-                                            stock = lgrid(ll) + (implied_s-s_tilde) - &
-                                                    dbar(grid_idx(2)) - (1d0-delta(qq))*implied_a
+                                        stock = implied_l + (implied_s-s_tilde) - &
+                                                dgrid(oo) - (1d0-delta(qq))*agrid(ll)
 
-                                            if ( net_int > 0d0) then
-                                                net_temp = (1d0-tax)*net_int + stock
+                                        if ( net_int > 0d0) then
+                                            net_temp = (1d0-tax)*net_int + stock
+                                        else
+                                            net_temp = net_int + stock
+                                        endif
+
+                                        if (net_temp>0d0) then
+
+                                            ! linear interpolate for value
+                                            call linint_Grow( net_temp, bank_na, bank_nb,&
+                                                                growth,bank_nlen-1, ixl, ixr, phix)
+
+                                            call linint_Grow( dgrid(oo), bank_da, bank_db,&
+                                                                dgrowth,bank_dlen-1, iyl, iyr, phiy)
+
+                                            if (phix <= phiy) then
+
+                                                v_temp = phix*v(ixl+1,iyl+1) +&
+                                                         (phiy-phix)*v(ixr+1,iyl+1) +&
+                                                         (1d0-phiy)*v(ixr+1,iyr+1)
+
                                             else
-                                                net_temp = net_int + stock
+
+                                                v_temp = phiy*v(ixl+1,iyl+1) +&
+                                                         (phix-phiy)*v(ixl+1,iyr+1) +&
+                                                         (1d0-phix)*v(ixr+1,iyr+1)
+
                                             endif
 
-                                            if (net_temp>0d0) then
+                                            RHS = RHS + prob_d(qq)*prob_l(rr)*v_temp
+                                        endif
 
-                                                ! linear interpolate for value
-                                                call linint_Grow( net_temp, bank_na, bank_nb,&
-                                                                    growth,bank_nlen-1, ixl, ixr, varphi)
-
-                                                v_temp = ( varphi*v(ixl+1,ss) + &
-                                                            (1d0-varphi)*v(ixr+1,ss) )
-
-                                                RHS = RHS + prob_d(qq)*prob_l(rr)*&
-                                                            dbar_prob(grid_idx(2),ss)*v_temp
-                                            endif
-
-                                        enddo
                                     enddo
                                 endif
 
                             enddo
 
-                            v_temp = divgrid(oo) + beta*RHS
+                            v_temp = implied_div + beta*RHS
 
                         endif
 
@@ -722,11 +713,10 @@ contains
 
                             v_curr_max(3) = v_temp
 
-                            l_curr_max(3)   = lgrid(ll)
-                            s_curr_max(3)   = implied_s
-                            d_curr_max(3)   = dbar(grid_idx(2))
-                            a_curr_max(3)   = implied_a
-                            div_curr_max(3) = divgrid(oo)
+                            l_curr_max(3)   = implied_l
+                            d_curr_max(3)   = dgrid(oo)
+                            a_curr_max(3)   = agrid(ll)
+                            div_curr_max(3) = implied_div
 
                         endif
 
@@ -734,93 +724,167 @@ contains
                 enddo  ! end of policy function loop
 
                 !
-                !
-                !    Case 4: binding liquidity requirement & deposit capacity constraint
-                !
-                !    implication:   I) d = dbar
-                !
-                !                  II) a = (1-h^s)*s/phi_lr
-                !
-                !                 III) s = ( n + dbar - l - theta*l^2/2 - div )/( 1 - (1-hs)/phi_lr )
-                !
-                !
-                !    search over: (l,div)   --> s --> a
-                !
+                !    Case 4: no assumed binding constraints
                 !
 
-                ! construct grids for control variables
-                if ( ( grid_idx(1) == 1 ).or.( iterator == 1 ) ) then  ! if n_b(1) or first iteratior of value function, use default grids
+                ! solve problem
+                do ll=1,grid_len ! for each loan
+                    do mm=1,grid_len ! for each deposit
+                        do oo=1,grid_len   ! for each dividend
+                            do zz=1,grid_len  ! for each wholesale
 
-                    call grid_Cons_Equi( lgrid, la,lb)
-                    call grid_Cons_Equi( divgrid,diva, divb )
+                                ! implied securities
+                                implied_s = bank_ngrid(grid_idx(1)) + agrid(zz) + dgrid(mm) +&
+                                            phid(bank_dgrid(grid_idx(2)),dgrid(mm)) - divgrid(oo) -&
+                                            lgrid(ll) - g(lgrid(ll))
 
-                else
+                                ! capital ratio
+                                e_temp = (lgrid(ll) + implied_s - dgrid(mm) - agrid(zz))/( lgrid(ll) + implied_s  )
 
-                    l_bound = maxval( (/ 0.0000001d0, lpol(grid_idx(1)-1,grid_idx(2)) - back_look*delta_l /) )
-                    pi_bound = maxval( (/ 0d0, div_pol(grid_idx(1)-1,grid_idx(2)) - delta_div /) )
+                                ! liquidity ratio
+                                liq_temp = (1d0-lr_hair)*implied_s/agrid(zz)
 
-                    call grid_Cons_Equi( lgrid, l_bound, lpol(grid_idx(1)-1,grid_idx(2)) + delta_l )
-                    call grid_Cons_Equi( divgrid, pi_bound , div_pol(grid_idx(1)-1,grid_idx(2)) + delta_div )
+                                if (e_temp > 1d0) then ! capital requirement (above)
+                                    v_temp = penalty
+                                elseif (e_temp < ebar) then ! capital requirement (below)
+                                    v_temp = penalty
+                                elseif (liq_temp < phi_lr) then
+                                    v_temp = penalty
+                                elseif ( implied_s < (1d0+hair)*agrid(zz)) then  ! collateral constraint
+                                    v_temp = penalty
+                                elseif (implied_s < 0d0) then
+                                    v_temp = penalty
+                                else               ! if all constraints satisfied
 
-                endif
+                                    ! initialize RHS of bellman equation
+                                    RHS = 0d0
+                                    ! for each possible funding shock
+                                    do qq=1,size(delta)
 
-                ! initialize current problem
-                v_curr_max(4)   = 0d0
-                l_curr_max(4)   = 0d0
-                d_curr_max(4)   = 0d0
-                div_curr_max(4) = 0d0
-                s_curr_max(4)   = 0d0
-                a_curr_max(4)   = 0d0
+                                        ! check liquidity default
+                                        if ( pstar*implied_s >= delta(qq)*agrid(zz)) then
+
+                                            s_tilde = ( delta(qq)*agrid(zz) )/pstar
+
+                                            ! no funding risk
+                                            do rr=1,size(Rl)        ! for each next period loan shock
+
+                                                ! compute networth
+                                                net_int = (Rl(rr)-1d0)*lgrid(ll) + i_s*(implied_s-s_tilde) -&
+                                                          (Rd-1d0)*dgrid(mm) - (Ra-1d0)*(1d0-delta(qq))*agrid(zz)
+
+                                                stock = lgrid(ll) + (implied_s-s_tilde) - dgrid(mm) - (1d0-delta(qq))*agrid(zz)
+
+                                                if ( net_int > 0d0) then
+                                                    net_temp = (1d0-tax)*net_int + stock
+                                                else
+                                                    net_temp = net_int + stock
+                                                endif
+
+                                                if (net_temp>0d0) then
+
+                                                    ! linear interpolate for value
+                                                    call linint_Grow( net_temp, bank_na, bank_nb,&
+                                                                        growth,bank_nlen-1, ixl, ixr, phix)
+
+                                                    call linint_Grow( dgrid(mm), bank_da, bank_db,&
+                                                                        dgrowth,bank_dlen-1, iyl, iyr, phiy)
+
+                                                    if (phix <= phiy) then
+
+                                                        v_temp = phix*v(ixl+1,iyl+1) +&
+                                                                 (phiy-phix)*v(ixr+1,iyl+1) +&
+                                                                 (1d0-phiy)*v(ixr+1,iyr+1)
+
+                                                    else
+
+                                                        v_temp = phiy*v(ixl+1,iyl+1) +&
+                                                                 (phix-phiy)*v(ixl+1,iyr+1) +&
+                                                                 (1d0-phix)*v(ixr+1,iyr+1)
+
+                                                    endif
+
+                                                    RHS = RHS + prob_d(qq)*prob_l(rr)*v_temp
+                                                endif
+
+                                            enddo
+                                        endif
+                                    enddo
+
+                                    v_temp = divgrid(oo) + beta*RHS
+
+                                endif
+
+                                ! evaluate value of policy function combination
+
+                                if (v_temp > v_curr_max(4)) then! if beats current, create new argmax and max value
+
+                                    v_curr_max(4) = v_temp
+
+                                    l_curr_max(4)   = lgrid(ll)
+                                    s_curr_max(4)   = implied_s
+                                    d_curr_max(4)   = dgrid(mm)
+                                    a_curr_max(4)   = agrid(zz)
+                                    div_curr_max(4) = divgrid(oo)
+
+                                endif
+
+                            enddo
+                        enddo
+                    enddo
+                enddo  ! end of policy function loop
+
+                !
+                !    Case 5: d = old value
+                !
 
                 ! solve problem
                 do ll=1,grid_len ! for each loan
                     do oo=1,grid_len   ! for each dividend
+                        do zz=1,grid_len  ! for each wholesale
 
-                        ! implied securities
-                        implied_s = (bank_ngrid(grid_idx(1)) + dbar(grid_idx(2)) - lgrid(ll) - g(lgrid(ll)) - divgrid(oo))/&
-                                    ( 1d0 - (1d0-lr_hair)/phi_lr )
+                            ! implied securities
+                            implied_s = bank_ngrid(grid_idx(1)) + agrid(zz) + bank_dgrid(grid_idx(2)) +&
+                                        phid(bank_dgrid(grid_idx(2)),bank_dgrid(grid_idx(2))) - divgrid(oo) -&
+                                        lgrid(ll) - g(lgrid(ll))
 
-                        ! implied wholesale funding
-                        implied_a = (1d0-lr_hair)*implied_s/phi_lr
+                            ! capital ratio
+                            e_temp = (lgrid(ll) + implied_s - bank_dgrid(grid_idx(2)) - agrid(zz))/( lgrid(ll) + implied_s  )
 
-                        ! implied capital ratio
-                        e_temp = (lgrid(ll) + implied_s - (dbar(grid_idx(2))+implied_a))/&
-                                ( lgrid(ll) + implied_s )
+                            ! liquidity ratio
+                            liq_temp = (1d0-lr_hair)*implied_s/agrid(zz)
 
-                        ! deposit capacity constraint already satisfied
-                        if (e_temp > 1d0) then ! capital requirement (above)
-                            v_temp = penalty
-                        elseif (e_temp < ebar) then ! capital requirement (below)
-                            v_temp = penalty
-                        elseif (implied_a < 0d0) then     ! negative wholesale funding
-                            v_temp = penalty
-                        elseif (implied_s < 0d0) then     ! negative securities
-                            v_temp = penalty
-                        elseif ( implied_s < (1d0+hair)*implied_a) then  ! collateral constraint
-                            v_temp = penalty
-                        else               ! if all constraints satisfied
+                            if (e_temp > 1d0) then ! capital requirement (above)
+                                v_temp = penalty
+                            elseif (e_temp < ebar) then ! capital requirement (below)
+                                v_temp = penalty
+                            elseif (liq_temp < phi_lr) then
+                                v_temp = penalty
+                            elseif ( implied_s < (1d0+hair)*agrid(zz)) then  ! collateral constraint
+                                v_temp = penalty
+                            elseif (implied_s < 0d0) then
+                                v_temp = penalty
+                            else               ! if all constraints satisfied
 
-                            ! initialize RHS of bellman equation
-                            RHS = 0d0
+                                ! initialize RHS of bellman equation
+                                RHS = 0d0
+                                ! for each possible funding shock
+                                do qq=1,size(delta)
 
-                            ! for each possible funding shock
-                            do qq=1,size(delta)
+                                    ! check liquidity default
+                                    if ( pstar*implied_s >= delta(qq)*agrid(zz)) then
 
-                                ! check liquidity default
-                                if ( pstar*implied_s >= delta(qq)*implied_a) then
+                                        s_tilde = ( delta(qq)*agrid(zz) )/pstar
 
-                                    s_tilde = ( delta(qq)*implied_a )/pstar
-
-                                    do rr=1,size(Rl)        ! for each next period loan shock
-                                        do ss=1,dbar_size  ! and each deposit funding shock
+                                        ! no funding risk
+                                        do rr=1,size(Rl)        ! for each next period loan shock
 
                                             ! compute networth
-                                            net_int = (Rl(rr)-1d0)*lgrid(ll) + i_s*(implied_s-s_tilde) - &
-                                                      (Rd-1d0)*dbar(grid_idx(2)) - &
-                                                      (Ra-1d0)*(1d0-delta(qq))*implied_a
+                                            net_int = (Rl(rr)-1d0)*lgrid(ll) + i_s*(implied_s-s_tilde) -&
+                                                      (Rd-1d0)*bank_dgrid(grid_idx(2)) - (Ra-1d0)*(1d0-delta(qq))*agrid(zz)
 
-                                            stock = lgrid(ll) + (implied_s-s_tilde) - &
-                                                    dbar(grid_idx(2)) - (1d0-delta(qq))*implied_a
+                                            stock = lgrid(ll) + (implied_s-s_tilde) - bank_dgrid(grid_idx(2)) -&
+                                                    (1d0-delta(qq))*agrid(zz)
 
                                             if ( net_int > 0d0) then
                                                 net_temp = (1d0-tax)*net_int + stock
@@ -832,269 +896,30 @@ contains
 
                                                 ! linear interpolate for value
                                                 call linint_Grow( net_temp, bank_na, bank_nb,&
-                                                                    growth,bank_nlen-1, ixl, ixr, varphi)
+                                                                    growth,bank_nlen-1, ixl, ixr, phix)
 
-                                                v_temp = ( varphi*v(ixl+1,ss) + &
-                                                            (1d0-varphi)*v(ixr+1,ss) )
+                                                call linint_Grow( bank_dgrid(grid_idx(2)), bank_da, bank_db,&
+                                                                    dgrowth,bank_dlen-1, iyl, iyr, phiy)
 
-                                                RHS = RHS + prob_d(qq)*prob_l(rr)*&
-                                                            dbar_prob(grid_idx(2),ss)*v_temp
+                                                if (phix <= phiy) then
+
+                                                    v_temp = phix*v(ixl+1,iyl+1) +&
+                                                             (phiy-phix)*v(ixr+1,iyl+1) +&
+                                                             (1d0-phiy)*v(ixr+1,iyr+1)
+
+                                                else
+
+                                                    v_temp = phiy*v(ixl+1,iyl+1) +&
+                                                             (phix-phiy)*v(ixl+1,iyr+1) +&
+                                                             (1d0-phix)*v(ixr+1,iyr+1)
+
+                                                endif
+
+                                                RHS = RHS + prob_d(qq)*prob_l(rr)*v_temp
                                             endif
 
                                         enddo
-                                    enddo
-                                endif
-
-                            enddo
-
-                            v_temp = divgrid(oo) + beta*RHS
-
-                        endif
-
-                        ! evaluate value of policy function combination
-
-                        if (v_temp > v_curr_max(4)) then! if beats current, create new argmax and max value
-
-                            v_curr_max(4) = v_temp
-
-                            l_curr_max(4)   = lgrid(ll)
-                            s_curr_max(4)   = implied_s
-                            d_curr_max(4)   = dbar(grid_idx(2))
-                            a_curr_max(4)   = implied_a
-                            div_curr_max(4) = divgrid(oo)
-
-                        endif
-
-                    enddo
-                enddo  ! end of policy function loop
-
-
-                !
-                !
-                !    Case 5: binding liquidity & capital requirement & deposit capacity constraint
-                !
-                !    implication:   I) d = dbar
-                !
-                !                  II) s = ( phi_lr*a )/(1-h^s)
-                !
-                !                 III) l = ( dbar + a*( 1 - phi_lr*(1-ebar)/(1-hs)) )/(1-ebar)
-                !
-                !
-                !                  IV) div = n + a + dbar - l(a) - theta*l(a)^2/2 - s(a)
-                !
-                !
-                !    search over: (a)   --> s--> l --> div
-
-                ! construct grids for control variables
-                if ( ( grid_idx(1) == 1 ).or.( iterator == 1 ) ) then  ! if n_b(1) or first iteratior of value function, use default grids
-
-                    call grid_Cons_Equi( agrid, aa, ab)
-
-                else
-
-                    a_bound = maxval( (/ 0.0000001d0, apol(grid_idx(1)-1,grid_idx(2)) - back_look*delta_a /) )
-
-                    call grid_Cons_Equi( agrid, a_bound, apol(grid_idx(1)-1,grid_idx(2)) + delta_a )
-
-                endif
-
-                ! initialize current problem
-                v_curr_max(5)   = 0d0
-                l_curr_max(5)   = 0d0
-                d_curr_max(5)   = 0d0
-                div_curr_max(5) = 0d0
-                s_curr_max(5)   = 0d0
-                a_curr_max(5)   = 0d0
-
-                ! solve problem
-                do oo=1,grid_len   ! for each wholesale funding
-
-                    !implied securities
-                    implied_s = ( phi_lr*agrid(oo) )/(1d0-lr_hair)
-
-                    implied_l = (dbar(grid_idx(2)) + agrid(oo)*( 1d0 - phi_lr*(1d0-ebar)/(1d0-lr_hair) ) )/(1d0-ebar)
-
-                    implied_div = ( bank_ngrid(grid_idx(1)) + agrid(oo) + dbar(grid_idx(2)) ) - &
-                                    implied_l - g(implied_l) - implied_s
-
-                    if (implied_s < 0d0) then     ! negative securities
-                        v_temp = penalty
-                    elseif (implied_div < 0d0) then     ! negative securities
-                        v_temp = penalty
-                    elseif (implied_l < 0d0) then     ! negative cash
-                        v_temp = penalty
-                    elseif ( implied_s < (1d0+hair)*agrid(oo)) then  ! collateral constraint
-                        v_temp = penalty
-                    else               ! if all constraints satisfied
-
-                        ! initialize RHS of bellman equation
-                        RHS = 0d0
-
-                        ! for each possible funding shock
-                        do qq=1,size(delta)
-
-                            ! check liquidity default
-                            if ( pstar*implied_s >= delta(qq)*agrid(oo)) then
-
-                                s_tilde = ( delta(qq)*agrid(oo) )/pstar
-
-                                do rr=1,size(Rl)        ! for each next period loan shock
-                                    do ss=1,dbar_size  ! and each deposit funding shock
-
-                                        ! compute networth
-                                        net_int = (Rl(rr)-1d0)*implied_l + i_s*(implied_s-s_tilde) - &
-                                                (Rd-1d0)*dbar(grid_idx(2)) - (Ra-1d0)*(1d0-delta(qq))*agrid(oo)
-
-                                        stock = implied_l + (implied_s-s_tilde) - &
-                                                dbar(grid_idx(2)) - (1d0-delta(qq))*agrid(oo)
-
-                                        if ( net_int > 0d0) then
-                                            net_temp = (1d0-tax)*net_int + stock
-                                        else
-                                            net_temp = net_int + stock
-                                        endif
-
-                                        if (net_temp>0d0) then
-
-                                            ! linear interpolate for value
-                                            call linint_Grow( net_temp, bank_na, bank_nb,&
-                                                                growth,bank_nlen-1, ixl, ixr, varphi)
-
-                                            v_temp = ( varphi*v(ixl+1,ss) + &
-                                                        (1d0-varphi)*v(ixr+1,ss) )
-
-                                            RHS = RHS + prob_d(qq)*prob_l(rr)*&
-                                                        dbar_prob(grid_idx(2),ss)*v_temp
-                                        endif
-
-
-                                    enddo
-                                enddo
-                            endif
-
-                        enddo
-
-                        v_temp = implied_div + beta*RHS
-
-                    endif
-
-                    ! evaluate value of policy function combination
-
-                    if (v_temp > v_curr_max(5)) then! if beats current, create new argmax and max value
-
-                        v_curr_max(5) = v_temp
-
-                        l_curr_max(5)   = implied_l
-                        s_curr_max(5)   = implied_s
-                        d_curr_max(5)   = dbar(grid_idx(2))
-                        a_curr_max(5)   = agrid(oo)
-                        div_curr_max(5) = implied_div
-
-                    endif
-
-                enddo  ! end of policy function loop
-
-
-                !
-                !    Case 6: no assumed binding constraints
-                !
-
-                ! construct grids for control variables
-                if ( ( grid_idx(1) == 1 ).or.( iterator == 1 ) ) then  ! if n_b(1) or first iteratior of value function, use default grids
-
-                    call grid_Cons_Equi( lgrid, la,lb)
-
-                    if ( da >= dbar(grid_idx(2))) then
-                        call grid_Cons_Equi( dgrid, .99d0*dbar(grid_idx(2)), dbar(grid_idx(2)) )
-                    else
-                        call grid_Cons_Equi( dgrid, da, dbar(grid_idx(2)))
-                    endif
-
-                    call grid_Cons_Equi( divgrid,diva, divb )
-
-                else
-
-                    d_bound = maxval( (/ 0.0000001d0, dpol(grid_idx(1)-1,grid_idx(2)) - back_look*delta_d /) )
-                    d_ubound = minval( (/ dpol(grid_idx(1)-1,grid_idx(2)) + delta_d, dbar(grid_idx(2)) /) )
-                    l_bound = maxval( (/ 0.0000001d0, lpol(grid_idx(1)-1,grid_idx(2)) - back_look*delta_l /) )
-                    pi_bound = maxval( (/ 0d0, div_pol(grid_idx(1)-1,grid_idx(2)) - delta_div /) )
-
-                    call grid_Cons_Equi( lgrid, l_bound, lpol(grid_idx(1)-1,grid_idx(2)) + delta_l )
-
-                    if (d_bound >= d_ubound) then
-                        call grid_Cons_Equi( dgrid, .99d0*d_bound, d_bound )
-                    else
-                        call grid_Cons_Equi( dgrid, d_bound, d_ubound )
-                    endif
-
-                    call grid_Cons_Equi( divgrid, pi_bound , div_pol(grid_idx(1)-1,grid_idx(2)) + delta_div )
-
-
-                endif
-
-                ! initialize current problem
-                v_curr_max(6)   = 0d0
-                l_curr_max(6)   = 0d0
-                d_curr_max(6)   = 0d0
-                div_curr_max(6) = 0d0
-                s_curr_max(6)   = 0d0
-                a_curr_max(6)   = 0d0
-
-                ! solve problem
-                do ll=1,grid_len ! for each loan
-                    do mm=1,grid_len ! for each deposit
-                        do oo=1,grid_len   ! for each dividend
-
-                            implied_a = 0d0
-
-                            ! implied securities
-                            implied_s = bank_ngrid(grid_idx(1)) + dgrid(mm) - divgrid(oo) -&
-                                        lgrid(ll) - g(lgrid(ll))
-
-                            ! implies a capital ratio
-                            e_temp = (lgrid(ll) + implied_s - dgrid(mm))/( lgrid(ll) + implied_s  )
-
-                            ! liquidity requirement naturally satisfied
-
-                            if (e_temp > 1d0) then ! capital requirement (above)
-                                v_temp = penalty
-                            elseif (e_temp < ebar) then ! capital requirement (below)
-                                v_temp = penalty
-                            elseif (implied_s < 0d0) then
-                                v_temp = penalty
-                            else               ! if all constraints satisfied
-
-                                ! initialize RHS of bellman equation
-                                RHS = 0d0
-
-                                ! no funding risk
-                                do rr=1,size(Rl)        ! for each next period loan shock
-                                    do ss=1,dbar_size  ! and each deposit funding shock
-
-                                        ! compute networth
-                                        net_int = (Rl(rr)-1d0)*lgrid(ll) + i_s*implied_s - (Rd-1d0)*dgrid(mm)
-
-                                        stock = lgrid(ll) + implied_s - dgrid(mm)
-
-                                        if ( net_int > 0d0) then
-                                            net_temp = (1d0-tax)*net_int + stock
-                                        else
-                                            net_temp = net_int + stock
-                                        endif
-
-                                        if (net_temp>0d0) then
-
-                                            ! linear interpolate for value
-                                            call linint_Grow( net_temp, bank_na, bank_nb,&
-                                                                growth,bank_nlen-1, ixl, ixr, varphi)
-
-                                            v_temp = ( varphi*v(ixl+1,ss) + &
-                                                        (1d0-varphi)*v(ixr+1,ss) )
-
-                                            RHS = RHS + prob_l(rr)*dbar_prob(grid_idx(2),ss)*v_temp
-                                        endif
-
-                                    enddo
+                                    endif
                                 enddo
 
                                 v_temp = divgrid(oo) + beta*RHS
@@ -1103,15 +928,15 @@ contains
 
                             ! evaluate value of policy function combination
 
-                            if (v_temp > v_curr_max(6)) then! if beats current, create new argmax and max value
+                            if (v_temp > v_curr_max(5)) then! if beats current, create new argmax and max value
 
-                                v_curr_max(6) = v_temp
+                                v_curr_max(5) = v_temp
 
-                                l_curr_max(6)   = lgrid(ll)
-                                s_curr_max(6)   = implied_s
-                                d_curr_max(6)   = dgrid(mm)
-                                a_curr_max(6)   = 0d0
-                                div_curr_max(6) = divgrid(oo)
+                                l_curr_max(5)   = lgrid(ll)
+                                s_curr_max(5)   = implied_s
+                                d_curr_max(5)   = bank_dgrid(grid_idx(2))
+                                a_curr_max(5)   = agrid(zz)
+                                div_curr_max(5) = divgrid(oo)
 
                             endif
 
@@ -1159,7 +984,7 @@ contains
                 div_pol = transform_f(divtemp_all)
 
                 ! compute error
-                error = sum( (v-vnew)**2d0 )/(bank_nlen*dbar_size)
+                error = sum( (v-vnew)**2d0 )/(bank_nlen*bank_dlen)
 
                 write(*,*) 'Root node, VFI iteration:', iterator,'error:',error
 
@@ -1209,13 +1034,11 @@ contains
 
     end subroutine
 
-
-
     subroutine get_dist()
 
         implicit none
 
-        real*8, dimension(bank_nlen,dbar_size) :: F0, F1, G_ent
+        real*8, dimension(bank_nlen,bank_dlen) :: F0, F1, G_ent
         real*8, parameter :: tolerance = 1e-40
         real*8 :: error_temp
         integer :: ii, jj, kk, ll, mm, nn, qq
@@ -1225,15 +1048,15 @@ contains
         real*8 :: s_tilde, mstar, excess_cash, mstar_agg
         real*8 :: net_int, stock
 
-        integer :: il, ir
-        real*8  :: phi
+        integer :: il, ir, iyl, iyr
+        real*8  :: phi, phiy
 
 !        default_liq_prob = 0d0
         ! compute default probabilities
         do ii=1,bank_nlen
-            do jj=1,dbar_size
+            do jj=1,bank_dlen
 
-                if ( bank_ngrid(ii) <= nstar(jj)) then
+                if ( bank_ngrid(ii) <= nstar) then
                     default_prob(ii,jj)     = 0d0
                     default_liq_prob(ii,jj) = 0d0
                 else
@@ -1255,28 +1078,25 @@ contains
 
                             ! for each return shock
                             do mm=1,size(Rl)
-                                ! for each capacity constraint shock
-                                do nn=1,dbar_size
 
-                                    net_int = (Rl(mm)-1d0)*lpol(ii,jj) + i_s*(spol(ii,jj)-s_tilde) &
-                                                     - (Rd-1d0)*dpol(ii,jj) - (Ra-1d0)*(1d0-delta(ll))*apol(ii,jj)
+                                net_int = (Rl(mm)-1d0)*lpol(ii,jj) + i_s*(spol(ii,jj)-s_tilde) &
+                                                 - (Rd-1d0)*dpol(ii,jj) - (Ra-1d0)*(1d0-delta(ll))*apol(ii,jj)
 
-                                    stock = lpol(ii,jj) + (spol(ii,jj)-s_tilde) -&
-                                            dpol(ii,jj) - (1d0-delta(ll))*apol(ii,jj)
+                                stock = lpol(ii,jj) + (spol(ii,jj)-s_tilde) -&
+                                        dpol(ii,jj) - (1d0-delta(ll))*apol(ii,jj)
 
-                                    if ( net_int > 0d0 ) then
-                                        net_temp = (1d0-tax)*net_int + stock
-                                    else
-                                        net_temp = net_int + stock
-                                    endif
+                                if ( net_int > 0d0 ) then
+                                    net_temp = (1d0-tax)*net_int + stock
+                                else
+                                    net_temp = net_int + stock
+                                endif
 
-                                    ! compute default probability
-                                    if (net_temp <= nstar(jj) ) then
-                                        default_prob(ii,jj) = default_prob(ii,jj) + &
-                                                        prob_l(mm)*dbar_prob(jj,nn)*prob_d(ll)
-                                    endif
+                                ! compute default probability
+                                if (net_temp <= nstar ) then
+                                    default_prob(ii,jj) = default_prob(ii,jj) + &
+                                                    prob_l(mm)*prob_d(ll)
+                                endif
 
-                                enddo
                             enddo
 
 
@@ -1288,7 +1108,7 @@ contains
         enddo
 
         !Initialize problem
-        F0 = 1d0/(bank_nlen*dbar_size)
+        F0 = 1d0/(bank_nlen*bank_dlen)
         error_temp = tolerance + 1d0
 
         do qq = 1,it_max        !for each iteration in updating process
@@ -1296,7 +1116,7 @@ contains
             F1 = 0d0
 
             do ii=1,bank_nlen
-                do jj=1,dbar_size
+                do jj=1,bank_dlen
 
                     ! for each delta shock
                     do ll=1,size(delta)
@@ -1308,44 +1128,52 @@ contains
 
                             ! for each return shock
                             do mm=1,size(Rl)
-                                ! for each capacity constraint
-                                do nn=1,dbar_size
 
+                                net_int = (Rl(mm)-1d0)*lpol(ii,jj) + i_s*(spol(ii,jj)-s_tilde) &
+                                                 - (Rd-1d0)*dpol(ii,jj) - (Ra-1d0)*(1d0-delta(ll))*apol(ii,jj)
 
-                                    net_int = (Rl(mm)-1d0)*lpol(ii,jj) + i_s*(spol(ii,jj)-s_tilde) &
-                                                     - (Rd-1d0)*dpol(ii,jj) - (Ra-1d0)*(1d0-delta(ll))*apol(ii,jj)
+                                stock = lpol(ii,jj) + (spol(ii,jj)-s_tilde) -&
+                                        dpol(ii,jj) - (1d0-delta(ll))*apol(ii,jj)
 
-                                    stock = lpol(ii,jj) + (spol(ii,jj)-s_tilde) -&
-                                            dpol(ii,jj) - (1d0-delta(ll))*apol(ii,jj)
+                                if ( net_int > 0d0 ) then
+                                    net_temp = (1d0-tax)*net_int + stock
+                                else
+                                    net_temp = net_int + stock
+                                endif
 
-                                    if ( net_int > 0d0 ) then
-                                        net_temp = (1d0-tax)*net_int + stock
+                                ! if no default, record new (networth,deposit level)
+                                if (net_temp > nstar ) then
+
+                                    ! find nearest grid point
+                                    if ( net_temp > bank_nb ) then
+                                        !min_idx(1) = bank_nlen
+                                        il = bank_nlen-1
+                                        ir = bank_nlen
+                                        phi = 0d0
                                     else
-                                        net_temp = net_int + stock
+                                        !min_idx= minloc( abs( bank_ngrid(jj,:) - net_temp ) )
+                                        call linint_Grow(net_temp, bank_na, bank_nb, growth,&
+                                                            bank_nlen+1, il, ir, phi)
+
                                     endif
 
-                                    ! if no default, record new (networth,theta,capacity constraint)
-                                    if (net_temp > nstar(jj) ) then
+                                    if ( dpol(ii,jj) > bank_db ) then
+                                        !min_idx(1) = bank_nlen
+                                        iyl = bank_dlen-1
+                                        iyr = bank_dlen
+                                        phiy = 0d0
+                                    else
+                                        !min_idx= minloc( abs( bank_ngrid(jj,:) - net_temp ) )
+                                        call linint_Grow(dpol(ii,jj), bank_da, bank_db, dgrowth,&
+                                                            bank_dlen+1, iyl, iyr, phiy)
 
-                                        ! find nearest grid point
-                                        if ( net_temp > bank_nb ) then
-                                            !min_idx(1) = bank_nlen
-                                            il = bank_nlen-1
-                                            ir = bank_nlen
-                                            phi = 0d0
-                                        else
-                                            !min_idx= minloc( abs( bank_ngrid(jj,:) - net_temp ) )
-                                            call linint_Grow(net_temp, bank_na, bank_nb, growth,&
-                                                                bank_nlen+1, il, ir, phi)
-
-                                        endif
-
-                                        F1(il,nn) = F1(il,nn) + phi*prob_l(mm)*dbar_prob(jj,nn)*prob_d(ll)*&
-                                                                                        F0(ii,jj)
-                                        F1(ir,nn) = F1(ir,nn) + (1d0-phi)*prob_l(mm)*dbar_prob(jj,nn)*&
-                                                                                        prob_d(ll)*F0(ii,jj)
                                     endif
-                                enddo
+
+                                    F1(il,iyl) = F1(il,iyl) + phi*phiy*prob_l(mm)*prob_d(ll)*F0(ii,jj)
+                                    F1(il,iyr) = F1(il,iyr) + phi*(1d0-phiy)*prob_l(mm)*prob_d(ll)*F0(ii,jj)
+                                    F1(ir,iyl) = F1(ir,iyl) + (1d0-phi)*phiy*prob_l(mm)*prob_d(ll)*F0(ii,jj)
+                                    F1(ir,iyr) = F1(ir,iyr) + (1d0-phi)*(1d0-phiy)*prob_l(mm)*prob_d(ll)*F0(ii,jj)
+                                endif
                             enddo
 
 
@@ -1360,7 +1188,7 @@ contains
 
             ! create entrant distribution (with replacement)
             do ii = 1,bank_nlen
-                do jj=1,dbar_size
+                do jj=1,bank_dlen
                     G_ent(ii,jj) = (default_liq_prob(ii,jj) + default_prob(ii,jj))*F0(ii,jj)
                 enddo
             enddo
@@ -1380,7 +1208,7 @@ contains
             !next-period distribution, with entrants
             F1 = F1 + mstar*G_ent
 
-            error_temp = sum(abs(F1-F0))/(bank_nlen*dbar_size )
+            error_temp = sum(abs(F1-F0))/(bank_nlen*bank_dlen )
 
             if (error_temp < tolerance) then
                 exit
@@ -1420,7 +1248,7 @@ contains
         real*8 :: implied_ra_rate
 
         integer :: ii,jj,kk,ll, mm, nn
-        real*8, dimension(bank_nlen,dbar_size) :: bshare
+        real*8, dimension(bank_nlen,bank_dlen) :: bshare
         real*8 :: agg_a
         real*8 :: obj1, obj2, obj3, obj4
         real*8 :: temp_net
@@ -1430,14 +1258,14 @@ contains
         agg_a = 0d0
         ! compute aggregate wholesale lending
         do ii=1,bank_nlen
-            do jj=1,dbar_size
+            do jj=1,bank_dlen
                 agg_a = agg_a + F_stationary(ii,jj)*apol(ii,jj)
             enddo
         enddo
 
         ! compute bank wholesalefunding shares
         do ii=1,bank_nlen
-            do jj=1,dbar_size
+            do jj=1,bank_dlen
                 bshare(ii,jj) = F_stationary(ii,jj)*apol(ii,jj)/agg_a
             enddo
         enddo
@@ -1450,7 +1278,7 @@ contains
 
         ! for each bank type today (n_b,theta,dbar)
         do ii=1,bank_nlen
-            do jj=1,dbar_size
+            do jj=1,bank_dlen
 
                 ! liquidity shocks
                 do ll=1,size(delta)
@@ -1467,29 +1295,26 @@ contains
 
                         ! compute possible next-period outcomes
                         do mm=1,size(Rl)
-                            do nn=1,dbar_size
 
-                                net_int = (Rl(mm)-1d0)*lpol(ii,jj) + i_s*(spol(ii,jj)-stilde(ii,jj,ll)) &
-                                                 - (Rd-1d0)*dpol(ii,jj) - (Ra-1d0)*(1d0-delta(ll))*apol(ii,jj)
+                            net_int = (Rl(mm)-1d0)*lpol(ii,jj) + i_s*(spol(ii,jj)-stilde(ii,jj,ll)) &
+                                             - (Rd-1d0)*dpol(ii,jj) - (Ra-1d0)*(1d0-delta(ll))*apol(ii,jj)
 
-                                stock = lpol(ii,jj) + (spol(ii,jj)-stilde(ii,jj,ll)) -&
-                                        dpol(ii,jj) - (1d0-delta(ll))*apol(ii,jj)
+                            stock = lpol(ii,jj) + (spol(ii,jj)-stilde(ii,jj,ll)) -&
+                                    dpol(ii,jj) - (1d0-delta(ll))*apol(ii,jj)
 
-                                if ( net_int > 0d0 ) then
-                                    temp_net = (1d0-tax)*net_int + stock
-                                else
-                                    temp_net = net_int + stock
-                                endif
+                            if ( net_int > 0d0 ) then
+                                temp_net = (1d0-tax)*net_int + stock
+                            else
+                                temp_net = net_int + stock
+                            endif
 
-                                ! computing objects (3) and (4)
-                                if ( temp_net < nstar(jj)  ) then  ! insolvency default
-                                    obj3 = obj3 + bshare(ii,jj)*prob_d(ll)*(1d0-delta(ll))*prob_l(mm)*dbar_prob(jj,nn)
-                                else
-                                    obj4 = obj4 + bshare(ii,jj)*prob_d(ll)*(1d0-delta(ll))*prob_l(mm)*dbar_prob(jj,nn)
-                                endif
+                            ! computing objects (3) and (4)
+                            if ( temp_net < nstar  ) then  ! insolvency default
+                                obj3 = obj3 + bshare(ii,jj)*prob_d(ll)*(1d0-delta(ll))*prob_l(mm)
+                            else
+                                obj4 = obj4 + bshare(ii,jj)*prob_d(ll)*(1d0-delta(ll))*prob_l(mm)
+                            endif
 
-
-                            enddo
                         enddo
 
 
@@ -1541,7 +1366,7 @@ contains
         idx_grid = 1
 
         do ii=1,bank_nlen                    ! for each level of bank networth
-            do jj=1,dbar_size            ! each deposit capacity constraint
+            do jj=1,bank_dlen            ! each deposit capacity constraint
 
                 ! record serial grid index
                 idx_grid(proc_idx,iterator,:) = (/ ii,jj /)
@@ -1562,7 +1387,7 @@ contains
 
         real*8, dimension(:), intent(in) :: total_array
 
-        real*8, dimension(bank_nlen,dbar_size) :: transform_f
+        real*8, dimension(bank_nlen,bank_dlen) :: transform_f
 
         ! local variables
         integer :: ii,jj,kk, iterator
@@ -1579,7 +1404,7 @@ contains
         iterator = 1
 
         do ii=1,bank_nlen                   ! for each level of bank networth
-            do jj=1,dbar_size           ! for each deposit capacity constraint
+            do jj=1,bank_dlen           ! for each deposit capacity constraint
 
                 transform_f(ii,jj) = total_array(iterator)
 
@@ -1602,14 +1427,13 @@ contains
         real*8, dimension(3) :: debt_shares
         real*8, dimension(4) :: al_sheet, holder
 
-
         real*8, dimension(size(data_moms)) :: mod_moms
         real*8, dimension(6) :: size_corr
         real*8, dimension(7) :: size_corr_intra
-        real*8, dimension(8,bank_nlen*dbar_size) :: corr_objs  ! distribution weight, size, risk-weighted equity, leverage, liquidity, ins default, liq default, equity value
-        real*8, dimension(9,bank_nlen*dbar_size) :: corr_objs_intra
-        real*8, dimension(2, bank_nlen*dbar_size ) :: roe_stack
-        real*8, dimension(bank_nlen,dbar_size) :: roe_pol1, roe_pol2, lev_pol
+        real*8, dimension(8,bank_nlen*bank_dlen) :: corr_objs  ! distribution weight, size, risk-weighted equity, leverage, liquidity, ins default, liq default, equity value
+        real*8, dimension(9,bank_nlen*bank_dlen) :: corr_objs_intra
+        real*8, dimension(2, bank_nlen*bank_dlen ) :: roe_stack
+        real*8, dimension(bank_nlen,bank_dlen) :: roe_pol1, roe_pol2, lev_pol, avg_net
 
         integer :: ii, jj, kk, ll, mm, iterator
 
@@ -1620,56 +1444,71 @@ contains
             !   Plots   !
             !           !
             !~~~~~~~~~~~!
-            ! bank policy functions
-            call plot(bank_ngrid,lpol(:,3),legend='loan',marker=2)
-            call plot(bank_ngrid,spol(:,3),legend='securities')
-            call plot(bank_ngrid,dpol(:,3),legend='deposit')
-            call plot(bank_ngrid,apol(:,3),legend='wholesale')
-            call plot(bank_ngrid,div_pol(:,3),legend='dividends',marker=2)
-            call execplot(title='Bank Policy Functions',filename='policies',filetype='png',output='policies')
 
             ! deposit policy functions with different dbar
-            call plot(bank_ngrid,dpol(:,1),legend='dbar = 1',marker=2)
-            call plot(bank_ngrid,dpol(:,3),legend='dbar = 3',marker=2)
-            call plot(bank_ngrid,dpol(:,6),legend='dbar = 6',marker=2)
+            do ii=1,bank_dlen
+                call plot(bank_ngrid,dpol(:,ii),marker=2)
+            enddo
             call execplot(title='Deposit Policy Functions',filename='deposit',filetype='png',output='deposit')
 
             ! loan policy functions with different dbar
-            call plot(bank_ngrid,lpol(:,1),legend='dbar = 1',marker=2)
-            call plot(bank_ngrid,lpol(:,3),legend='dbar = 3',marker=2)
-            call plot(bank_ngrid,lpol(:,6),legend='dbar = 6',marker=2)
+            do ii=1,bank_dlen
+                call plot(bank_ngrid,lpol(:,ii),marker=2)
+            enddo
             call execplot(title='Loan Policy Functions',filename='loan',filetype='png',output='loan')
 
             ! wholesale policy functions with different dbar
-            call plot(bank_ngrid,apol(:,1),legend='dbar = 1',marker=2)
-            call plot(bank_ngrid,apol(:,3),legend='dbar = 3',marker=2)
-            call plot(bank_ngrid,apol(:,6),legend='dbar = 6',marker=2)
+            do ii=1,bank_dlen
+                call plot(bank_ngrid,apol(:,ii),marker=2)
+            enddo
             call execplot(title='Wholesale Policy Functions',filename='wholesale',filetype='png',output='wholesale')
 
             ! dividend policy functions with different dbar
-            call plot(bank_ngrid,div_pol(:,1),legend='dbar = 1',marker=2)
-            call plot(bank_ngrid,div_pol(:,3),legend='dbar = 3',marker=2)
-            call plot(bank_ngrid,div_pol(:,6),legend='dbar = 6',marker=2)
+            do ii=1,bank_dlen
+                call plot(bank_ngrid,div_pol(:,ii),marker=2)
+            enddo
             call execplot(title='Dividend Policy Functions',filename='dividend',filetype='png',output='dividend')
 
             ! stationary distribution
-            call plot_hist(bank_ngrid,F_stationary(:,1)        ,legend='dbar=1')
-            call plot_hist(bank_ngrid,F_stationary(:,6)        ,legend='dbar=6')
+            do ii=1,bank_dlen
+                call plot_hist(bank_ngrid,F_stationary(:,ii))
+            enddo
             call execplot(title='Stationary Distribution of Networth' ,filename='dist',filetype='png',output='dist')
 
             ! leverage equity ratio policy function
             do ii=1,bank_nlen
-                do jj=1,dbar_size
+                do jj=1,bank_dlen
 
                     lev_pol(ii,jj) = ( lpol(ii,jj) + spol(ii,jj) - dpol(ii,jj) - apol(ii,jj) )/(lpol(ii,jj) + spol(ii,jj))
 
                 enddo
             enddo
 
-            call plot(bank_ngrid,lev_pol(:,1),legend='dbar = 1',marker=2)
-            call plot(bank_ngrid,lev_pol(:,3),legend='dbar = 3',marker=2)
-            call plot(bank_ngrid,lev_pol(:,6),legend='dbar = 6',marker=2)
+            do ii=1,bank_dlen
+                call plot(bank_ngrid,lev_pol(:,ii),marker=2)
+            enddo
             call execplot(title='Leverage Ratio Policy Function',filename='lev',filetype='png',output='lev')
+
+            ! average networth law of motion
+            do ii=1,bank_nlen
+                do jj=1,bank_dlen
+                    avg_net(ii,jj) = l_mu*lpol(ii,jj) + (1d0+i_s)*spol(ii,jj) -&
+                                        Rd*dpol(ii,jj) - Ra*apol(ii,jj)
+                enddo
+            enddo
+
+            do ii = 1,bank_dlen
+                call plot(bank_ngrid,avg_net(:,ii))
+            enddo
+            call plot(bank_ngrid,bank_ngrid,linewidth=4d0)
+            call execplot(title='Networth Law of Motion',filename='net_law',filetype='png',output='net_law')
+
+            ! deposit law of motion
+            do ii = 1,bank_nlen
+                call plot(bank_dgrid,dpol(ii,:))
+            enddo
+            call plot(bank_dgrid,bank_dgrid,linewidth=4d0)
+            call execplot(title='Deposits Law of Motion',filename='dep_law',filetype='png',output='dep_law')
 
             !~~~~~~~~~~~~~~~~~~~~~~~!
             !                       !
@@ -1727,7 +1566,7 @@ contains
             total_rwa = 0d0
 
             do ii=1,bank_nlen
-                do jj=1,dbar_size
+                do jj=1,bank_dlen
 
 
                     total_eq  = total_eq  + F_stationary(ii,jj)*( lpol(ii,jj)  +&
@@ -1751,7 +1590,7 @@ contains
 
             do ii=1,bank_nlen
                 do ll=1,size(Rl)
-                    do kk=1,dbar_size
+                    do kk=1,bank_dlen
 
 
                         if ( lpol(ii,kk) .ne. 0d0 ) then
@@ -1786,8 +1625,7 @@ contains
             iterator = 1
 
             do ii=1,bank_nlen
-                do jj=1,dbar_size
-
+                do jj=1,bank_dlen
 
                     ! distribution weights
                     corr_objs(1,iterator) =  F_stationary(ii,jj)
@@ -1861,7 +1699,7 @@ contains
             iterator = 1
 
             do ii=1,bank_nlen
-                do jj=1,dbar_size
+                do jj=1,bank_dlen
 
                     ! insolvency default
                     corr_objs(6,iterator) = default_prob(ii,jj)
@@ -1897,7 +1735,7 @@ contains
             roe_pol2 = 0d0
 
             do ii=1,bank_nlen
-                do jj=1,dbar_size
+                do jj=1,bank_dlen
 
                     ! for each liquidity shock
                     do ll=1,size(delta)
@@ -1966,7 +1804,7 @@ contains
             iterator = 1
 
             do ii=1,bank_nlen
-                do jj=1,dbar_size
+                do jj=1,bank_dlen
 
                     ! insolvency default
                     roe_stack(1,iterator) = roe_pol1(ii,jj)
@@ -2060,7 +1898,7 @@ contains
             iterator = 1
 
             do ii=1,bank_nlen
-                do kk=1,dbar_size
+                do kk=1,bank_dlen
 
                     ! distribution weights
                     corr_objs_intra(1,iterator) =  F_stationary(ii,kk)
@@ -2187,7 +2025,7 @@ contains
             total_whole  = 0d0
             total_net    = 0d0
 
-            do jj=1,dbar_size
+            do jj=1,bank_dlen
                 do kk=1,bank_nlen
 
                     total_assets = total_assets + F_stationary(kk,jj)*( lpol(kk,jj) + &

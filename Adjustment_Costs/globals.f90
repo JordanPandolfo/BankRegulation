@@ -36,26 +36,23 @@ module globals
     real*8, parameter                                  :: theta      = .024d0
     real*8, parameter                                  :: nu         = 2d0                                                   ! curvature
 
-    ! loan returns
-    !real*8, dimension(120)                               :: Rl_pre   ! bank return process
-    !real*8, dimension(size(Rl_pre))                        :: prob_l_pre
-
     real*8, dimension(20)                               :: Rl   ! bank return process
     real*8, dimension(size(Rl))                        :: prob_l
 
     real*8, parameter                                  :: l_mu = 1.01d0   ! median loan returns : 1-x = net median return (.04), then log
-!    real*8, parameter                                  :: l_mu = log(.99d0)   ! median loan returns : 1-x = net median return (.04), then log
 
-    ! bank deposit capacity constraints
-    integer, parameter                                 :: dbar_size = 6
-    real*8, dimension(dbar_size)           :: dbar
-    real*8, dimension(dbar_size,dbar_size) :: dbar_prob
+    ! old deposit grid
+    real*8, parameter            :: bank_da = 0d0
+    real*8                       :: bank_db
+    integer, parameter           :: bank_dlen = 30
+    real*8, dimension(bank_dlen) :: bank_dgrid
+    real*8, parameter            :: dgrowth = .1d0
 
     ! networth grid
-    real*8, dimension(dbar_size)           :: nstar
-    real*8          :: bank_na   ! lower bound
-    real*8                    :: bank_nb     ! upper bound
-    integer, parameter                                 :: bank_nlen = 40
+    real*8                                             :: nstar
+    real*8, parameter                                  :: bank_na = 0d0
+    real*8                                             :: bank_nb
+    integer, parameter                                 :: bank_nlen = 30
     real*8, dimension(bank_nlen)                       :: bank_ngrid
     real*8, parameter                                  :: growth    =  .1d0 !0.001d0 !.01d0
 
@@ -92,14 +89,11 @@ module globals
     ! bank liquidation value
     real*8, parameter                                  :: liq    = 0.65d0  !.85d0
 
-    ! identity matrix
-    real*8, dimension( bank_nlen*dbar_size, bank_nlen*dbar_size ) :: id_mat
-
     !Individual policy functions
-    real*8, dimension(bank_nlen,dbar_size)             :: v, vnew, lpol, spol, dpol, div_pol, apol, epol
-    real*8, dimension(bank_nlen,dbar_size,size(delta)) :: stilde
-    real*8, dimension(bank_nlen,dbar_size)             :: F_stationary
-    real*8, dimension(bank_nlen,dbar_size)             :: default_prob, default_liq_prob
+    real*8, dimension(bank_nlen,bank_dlen)             :: v, vnew, lpol, spol, dpol, div_pol, apol, epol
+    real*8, dimension(bank_nlen,bank_dlen,size(delta)) :: stilde
+    real*8, dimension(bank_nlen,bank_dlen)             :: F_stationary
+    real*8, dimension(bank_nlen,bank_dlen)             :: default_prob, default_liq_prob
 
     !~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
     !                            !
@@ -107,11 +101,11 @@ module globals
     !                            !
     !~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
 
+    real*8                         :: kappa   ! deposit adjustment cost
     real*8, parameter              :: phi = 0d0            ! equity issuance cost
     real*8                         :: l_sigma2       ! loan return volatility
     real*8                         :: gam            ! bank discount factor
     real*8                         :: alpha          ! outside security investor elasticity
-    real*8 :: dbar_mu        ! average deposit capaciy constraint
     real*8                         :: i_s             ! return on securities
 
 
@@ -123,8 +117,6 @@ module globals
     !   Value Function Solver Parameters    !
     !                                       !
     !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
-    !integer, parameter                        :: grid_len = 5
-    !real*8, dimension(grid_len)               :: lgrid, divgrid, cgrid, sgrid, dgrid, agrid
 
     integer :: grid_len
     real*8, allocatable, dimension(:) :: lgrid, divgrid, cgrid, sgrid, dgrid, agrid
@@ -215,6 +207,17 @@ contains
 
     end function
 
+    function phid(oldd,newd)
+
+        implicit none
+
+        real*8, intent(in) :: oldd, newd
+        real*8             :: phid
+
+        phid = -kappa*( newd - oldd)**2d0
+
+    end function
+
     ! dividend adjustment cost
     function phi_div(x)
 
@@ -244,7 +247,7 @@ contains
 
         ! for each bank state
         do ii=1,bank_nlen
-            do jj=1,dbar_size
+            do jj=1,bank_dlen
 
                 ! each funding shock
                 do ll=1,size(delta)
@@ -257,31 +260,27 @@ contains
 
                         ! for each loan return
                         do mm=1,size(Rl)
-                            ! for each capacity constraint
-                            do nn=1,dbar_size
 
+                            net_int = (Rl(mm)-1d0)*lpol(ii,jj) + i_s*(spol(ii,jj)-stilde) &
+                                             - (Rd-1d0)*dpol(ii,jj) - (Ra-1d0)*(1d0-delta(ll))*apol(ii,jj)
 
-                                net_int = (Rl(mm)-1d0)*lpol(ii,jj) + i_s*(spol(ii,jj)-stilde) &
-                                                 - (Rd-1d0)*dpol(ii,jj) - (Ra-1d0)*(1d0-delta(ll))*apol(ii,jj)
+                            stock = lpol(ii,jj) + (spol(ii,jj)-stilde) -&
+                                    dpol(ii,jj) - (1d0-delta(ll))*apol(ii,jj)
 
-                                stock = lpol(ii,jj) + (spol(ii,jj)-stilde) -&
-                                        dpol(ii,jj) - (1d0-delta(ll))*apol(ii,jj)
+                            if ( net_int > 0d0 ) then
+                                net_temp = (1d0-tax)*net_int + stock
+                            else
+                                net_temp = net_int + stock
+                            endif
 
-                                if ( net_int > 0d0 ) then
-                                    net_temp = (1d0-tax)*net_int + stock
-                                else
-                                    net_temp = net_int + stock
-                                endif
+                            ! if no default
+                            if ( net_temp > nstar ) then
 
-                                ! if no default
-                                if ( net_temp > nstar(nn) ) then
+                                ! record tax income
+                                temp_tax = temp_tax + F_stationary(ii,jj)*prob_d(ll)*prob_l(mm)*&
+                                                                     tax*net_int
 
-                                    ! record tax income
-                                    temp_tax = temp_tax + F_stationary(ii,jj)*prob_d(ll)*prob_l(mm)*&
-                                                                         dbar_prob(jj,nn)*tax*net_int
-
-                                endif
-                            enddo
+                            endif
                         enddo
                     endif
                 enddo
@@ -301,7 +300,7 @@ contains
         integer :: ii, jj, kk
 
         do ii=1,bank_nlen
-            do jj=1,dbar_size
+            do jj=1,bank_dlen
 
                 temp_gov = temp_gov + F_stationary(ii,jj)*spol(ii,jj)
 
@@ -332,7 +331,7 @@ contains
         total_whole  = 0d0
         total_net    = 0d0
 
-        do jj=1,dbar_size
+        do jj=1,bank_dlen
             do kk=1,bank_nlen
 
                 total_assets = total_assets + F_stationary(kk,jj)*( lpol(kk,jj) + &
@@ -369,7 +368,7 @@ contains
         temp_sec  = 0d0
 
         do ii=1,bank_nlen
-            do kk=1,dbar_size
+            do kk=1,bank_dlen
 
                 temp_loan = temp_loan + F_stationary(ii,kk)*lpol(ii,kk)
                 temp_sec  = temp_sec  + F_stationary(ii,kk)*spol(ii,kk)
@@ -399,14 +398,14 @@ contains
 
         ! money market sector
         real*8 :: agg_a, obj1, obj2, obj3, obj4, temp_net, rtilde_a
-        real*8, dimension(bank_nlen,dbar_size) :: bshare
+        real*8, dimension(bank_nlen,bank_dlen) :: bshare
         real*8 :: excess_cash, net_int, stock
 
         ! compute aggregate dividends from banking sector
         temp_div = 0d0
 
         do ii = 1,bank_nlen
-            do kk=1,dbar_size
+            do kk=1,bank_dlen
 
                 temp_div = temp_div + F_stationary(ii,kk)*div_pol(ii,kk)
 
@@ -418,13 +417,13 @@ contains
         ! compute aggregate dividends from money market sector
         agg_a = 0d0
         do ii=1,bank_nlen
-            do kk=1,dbar_size
+            do kk=1,bank_dlen
                 agg_a = agg_a + F_stationary(ii,kk)*apol(ii,kk)
             enddo
         enddo
 
         do ii=1,bank_nlen
-            do kk=1,dbar_size
+            do kk=1,bank_dlen
                 bshare(ii,kk) = F_stationary(ii,kk)*apol(ii,kk)/agg_a
             enddo
         enddo
@@ -435,7 +434,7 @@ contains
         obj4 = 0d0
 
         do ii=1,bank_nlen
-            do kk=1,dbar_size
+            do kk=1,bank_dlen
 
                 ! liquidity shocks
                 do ll=1,size(delta)
@@ -447,26 +446,24 @@ contains
                         obj2 = obj2 + bshare(ii,kk)*prob_d(ll)*delta(ll)                       ! non-default liquidity shock cash flow
 
                         do mm=1,size(Rl)
-                            do nn=1,dbar_size
 
-                                net_int = (Rl(mm)-1d0)*lpol(ii,kk) + i_s*(spol(ii,kk)-stilde(ii,kk,ll)) &
-                                                 - (Rd-1d0)*dpol(ii,kk) - (Ra-1d0)*(1d0-delta(ll))*apol(ii,kk)
+                            net_int = (Rl(mm)-1d0)*lpol(ii,kk) + i_s*(spol(ii,kk)-stilde(ii,kk,ll)) &
+                                             - (Rd-1d0)*dpol(ii,kk) - (Ra-1d0)*(1d0-delta(ll))*apol(ii,kk)
 
-                                stock = lpol(ii,kk) + (spol(ii,kk)-stilde(ii,kk,ll)) -&
-                                        dpol(ii,kk) - (1d0-delta(ll))*apol(ii,kk)
+                            stock = lpol(ii,kk) + (spol(ii,kk)-stilde(ii,kk,ll)) -&
+                                    dpol(ii,kk) - (1d0-delta(ll))*apol(ii,kk)
 
-                                if ( net_int > 0d0 ) then
-                                    temp_net = (1d0-tax)*net_int + stock
-                                else
-                                    temp_net = net_int + stock
-                                endif
+                            if ( net_int > 0d0 ) then
+                                temp_net = (1d0-tax)*net_int + stock
+                            else
+                                temp_net = net_int + stock
+                            endif
 
-                                if ( temp_net < nstar(nn) ) then
-                                    obj3 = obj3 + bshare(ii,kk)*prob_d(ll)*(1d0-delta(ll))*prob_l(mm)*dbar_prob(kk,nn) ! insolvency default cash flow
-                                else
-                                    obj4 = obj4 + bshare(ii,kk)*prob_d(ll)*(1d0-delta(ll))*prob_l(mm)*dbar_prob(kk,nn)  ! repayment cash flow
-                                endif
-                            enddo
+                            if ( temp_net < nstar ) then
+                                obj3 = obj3 + bshare(ii,kk)*prob_d(ll)*(1d0-delta(ll))*prob_l(mm) ! insolvency default cash flow
+                            else
+                                obj4 = obj4 + bshare(ii,kk)*prob_d(ll)*(1d0-delta(ll))*prob_l(mm)  ! repayment cash flow
+                            endif
                         enddo
                     endif
                 enddo
@@ -492,7 +489,7 @@ contains
         temp_dep = 0d0
 
         do ii = 1,bank_nlen
-            do kk=1,dbar_size
+            do kk=1,bank_dlen
 
                 temp_dep = temp_dep + F_stationary(ii,kk)*dpol(ii,kk)
 
@@ -521,7 +518,7 @@ contains
 
         ! for each (n_b,dbar)
         do ii = 1,bank_nlen
-            do kk=1,dbar_size
+            do kk=1,bank_dlen
 
                 ! for each funding shock
                 do ll=1,size(delta)
@@ -565,42 +562,37 @@ contains
 
                         ! for each loan return
                         do mm=1,size(Rl)
-                            ! for each capacity constraint
-                            do nn=1,dbar_size
 
+                            net_int = (Rl(mm)-1d0)*lpol(ii,kk) + i_s*(spol(ii,kk)-stilde) &
+                                             - (Rd-1d0)*dpol(ii,kk) - (Ra-1d0)*(1d0-delta(ll))*apol(ii,kk)
 
-                                net_int = (Rl(mm)-1d0)*lpol(ii,kk) + i_s*(spol(ii,kk)-stilde) &
-                                                 - (Rd-1d0)*dpol(ii,kk) - (Ra-1d0)*(1d0-delta(ll))*apol(ii,kk)
+                            stock = lpol(ii,kk) + (spol(ii,kk)-stilde) -&
+                                    dpol(ii,kk) - (1d0-delta(ll))*apol(ii,kk)
 
-                                stock = lpol(ii,kk) + (spol(ii,kk)-stilde) -&
-                                        dpol(ii,kk) - (1d0-delta(ll))*apol(ii,kk)
+                            if ( net_int > 0d0 ) then
+                                net_temp = (1d0-tax)*net_int + stock
+                            else
+                                net_temp = net_int + stock
+                            endif
 
-                                if ( net_int > 0d0 ) then
-                                    net_temp = (1d0-tax)*net_int + stock
-                                else
-                                    net_temp = net_int + stock
+                            ! if insolvency default
+                            if ( net_temp <= nstar ) then
+
+                                ! in insolvency default, assets (l+s) have interest maturity
+                                liq_assets = liq*( Rl(mm)*lpol(ii,kk) + (1d0+i_s)*(spol(ii,kk)-stilde) -&
+                                                (1d0+hair)*apol(ii,kk)*(1d0-delta(ll)) )
+
+                                net_position = -( liq_assets - Rd*dpol(ii,kk) ) !-(1d0-delta(ll))*maxval( (/ apol(ii,jj,kk)*(Ra -(1d0+hair)) , 0d0 /) ) )
+
+                                if ( net_position < 0d0 ) then
+                                    net_position = 0d0
                                 endif
 
-                                ! if insolvency default
-                                if ( net_temp <= nstar(nn) ) then
+                                ! compute cost of deposit insurance, net of assets
+                                temp_DI = temp_DI + F_stationary(ii,kk)*prob_d(ll)*prob_l(mm)*net_position
 
-                                    ! in insolvency default, assets (l+s) have interest maturity
-                                    liq_assets = liq*( Rl(mm)*lpol(ii,kk) + (1d0+i_s)*(spol(ii,kk)-stilde) -&
-                                                    (1d0+hair)*apol(ii,kk)*(1d0-delta(ll)) )
+                            endif
 
-                                    net_position = -( liq_assets - Rd*dpol(ii,kk) ) !-(1d0-delta(ll))*maxval( (/ apol(ii,jj,kk)*(Ra -(1d0+hair)) , 0d0 /) ) )
-
-                                    if ( net_position < 0d0 ) then
-                                        net_position = 0d0
-                                    endif
-
-                                    ! compute cost of deposit insurance, net of assets
-                                    temp_DI = temp_DI + F_stationary(ii,kk)*prob_d(ll)*prob_l(mm)*&
-                                                        dbar_prob(kk,nn)*net_position
-
-                                endif
-
-                            enddo
                         enddo
 
                     endif
@@ -630,7 +622,7 @@ contains
 
         ! for each (n_b,theta,dbar)
         do ii = 1,bank_nlen
-            do jj =1,dbar_size
+            do jj =1,bank_dlen
 
                 ! for each funding shock
                 do ll=1,size(delta)
@@ -667,13 +659,13 @@ contains
         integer :: ii, jj, kk, ll, mm, nn
         integer, dimension(1) :: min_idx
         real*8 :: r_thresh
-        real*8 :: def_diff, agg_a, excess_cash, net_temp, liq_assets, stilde, ctilde, wholesale_weight
+        real*8 :: def_diff, agg_a, excess_cash, net_temp, liq_assets, stilde, wholesale_weight
 
         ! compute aggregate wholesale funding
         agg_a = 0d0
 
         do ii=1,bank_nlen
-            do jj=1,dbar_size
+            do jj=1,bank_dlen
 
                 agg_a = agg_a + F_stationary(ii,jj)*apol(ii,jj)
 
@@ -682,7 +674,7 @@ contains
 
         ! compute weighted default rates
         do ii=1,bank_nlen
-            do jj=1,dbar_size
+            do jj=1,bank_dlen
 
                 ! compute wholesale weight
                 wholesale_weight = F_stationary(ii,jj)*apol(ii,jj)/agg_a
@@ -712,7 +704,7 @@ contains
         temp_def = 0d0
 
         do ii=1,bank_nlen
-            do jj=1,dbar_size
+            do jj=1,bank_dlen
 
                 temp_def(1) = temp_def(1) + F_stationary(ii,jj)*default_prob(ii,jj)
                 temp_def(2) = temp_def(2) + F_stationary(ii,jj)*default_liq_prob(ii,jj)
@@ -742,7 +734,7 @@ contains
         agg_sec  = 0d0
 
         do ii=1,bank_nlen
-            do jj=1,dbar_size
+            do jj=1,bank_dlen
 
                 agg_loan = agg_loan + F_stationary(ii,jj)*lpol(ii,jj)
 
@@ -760,7 +752,7 @@ contains
         agg_whole  = 0d0
 
         do ii=1,bank_nlen
-            do jj=1,dbar_size
+            do jj=1,bank_dlen
 
                 agg_dep    = agg_dep + F_stationary(ii,jj)*dpol(ii,jj)
 
@@ -779,7 +771,7 @@ contains
         total_rwa = 0d0
 
         do ii=1,bank_nlen
-            do jj=1,dbar_size
+            do jj=1,bank_dlen
 
                 total_eq  = total_eq  + F_stationary(ii,jj)*( lpol(ii,jj) +&
                             spol(ii,jj) - (dpol(ii,jj)+apol(ii,jj)))
@@ -805,7 +797,7 @@ contains
         liq_den = 0d0
 
         do ii=1,bank_nlen
-            do jj=1,dbar_size
+            do jj=1,bank_dlen
 
                 if (apol(ii,jj) >0d0) then
 
@@ -826,7 +818,7 @@ contains
         total_liabs  = 0d0
         total_dep   = 0d0
 
-        do jj=1,dbar_size
+        do jj=1,bank_dlen
             do kk=1,bank_nlen
 
                 total_liabs  = total_liabs  + F_stationary(kk,jj)*( dpol(kk,jj) + &
