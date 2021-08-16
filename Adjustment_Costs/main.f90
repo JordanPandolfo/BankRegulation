@@ -15,6 +15,7 @@ PROGRAM compute_eq
     !   Set External Parameter Values    !
     !                                    !
     !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
+    tau_d  = 0d0
     ebar   = .04d0
     phi_lr = 0.001d0
     nstar = 0d0
@@ -425,7 +426,8 @@ contains
 
                                             ! compute networth
                                             net_int = (Rl(rr)-1d0)*lgrid(ll) + i_s*(sgrid(ss)-s_tilde) -&
-                                                      (Rd-1d0)*implied_d -(Ra-1d0)*(1d0-delta(qq))*agrid(zz)
+                                                      (Rd-1d0)*implied_d -(Ra-1d0)*(1d0-delta(qq))*agrid(zz)&
+                                                      - ins_tax(implied_d)
 
                                             stock = lgrid(ll) + (sgrid(ss)-s_tilde) - implied_d - (1d0-delta(qq))*agrid(zz)
 
@@ -542,7 +544,8 @@ contains
                                             ! compute networth
                                             net_int = (Rl(rr)-1d0)*lgrid(ll) + i_s*(sgrid(nn)-s_tilde) - &
                                                       (Rd-1d0)*dgrid(oo) - &
-                                                      (Ra-1d0)*(1d0-delta(qq))*implied_a
+                                                      (Ra-1d0)*(1d0-delta(qq))*implied_a&
+                                                      - ins_tax(dgrid(oo))
 
                                             stock = lgrid(ll) + (sgrid(nn)-s_tilde) - &
                                                     dgrid(oo) - (1d0-delta(qq))*implied_a
@@ -661,7 +664,8 @@ contains
                                         ! compute networth
                                         net_int = (Rl(rr)-1d0)*implied_l + i_s*(implied_s-s_tilde) - &
                                                   (Rd-1d0)*dgrid(oo) - &
-                                                  (Ra-1d0)*(1d0-delta(qq))*agrid(ll)
+                                                  (Ra-1d0)*(1d0-delta(qq))*agrid(ll)&
+                                                  - ins_tax(dgrid(oo))
 
                                         stock = implied_l + (implied_s-s_tilde) - &
                                                 dgrid(oo) - (1d0-delta(qq))*agrid(ll)
@@ -771,7 +775,8 @@ contains
 
                                                 ! compute networth
                                                 net_int = (Rl(rr)-1d0)*lgrid(ll) + i_s*(implied_s-s_tilde) -&
-                                                          (Rd-1d0)*dgrid(mm) - (Ra-1d0)*(1d0-delta(qq))*agrid(zz)
+                                                          (Rd-1d0)*dgrid(mm) - (Ra-1d0)*(1d0-delta(qq))*agrid(zz)&
+                                                          - ins_tax(dgrid(mm))
 
                                                 stock = lgrid(ll) + (implied_s-s_tilde) - dgrid(mm) - (1d0-delta(qq))*agrid(zz)
 
@@ -881,7 +886,8 @@ contains
 
                                             ! compute networth
                                             net_int = (Rl(rr)-1d0)*lgrid(ll) + i_s*(implied_s-s_tilde) -&
-                                                      (Rd-1d0)*bank_dgrid(grid_idx(2)) - (Ra-1d0)*(1d0-delta(qq))*agrid(zz)
+                                                      (Rd-1d0)*bank_dgrid(grid_idx(2)) - (Ra-1d0)*(1d0-delta(qq))*agrid(zz)&
+                                                      - ins_tax(bank_dgrid(grid_idx(2)))
 
                                             stock = lgrid(ll) + (implied_s-s_tilde) - bank_dgrid(grid_idx(2)) -&
                                                     (1d0-delta(qq))*agrid(zz)
@@ -1080,7 +1086,8 @@ contains
                             do mm=1,size(Rl)
 
                                 net_int = (Rl(mm)-1d0)*lpol(ii,jj) + i_s*(spol(ii,jj)-s_tilde) &
-                                                 - (Rd-1d0)*dpol(ii,jj) - (Ra-1d0)*(1d0-delta(ll))*apol(ii,jj)
+                                                 - (Rd-1d0)*dpol(ii,jj) - (Ra-1d0)*(1d0-delta(ll))*apol(ii,jj)&
+                                                 - ins_tax(dpol(ii,jj))
 
                                 stock = lpol(ii,jj) + (spol(ii,jj)-s_tilde) -&
                                         dpol(ii,jj) - (1d0-delta(ll))*apol(ii,jj)
@@ -1130,7 +1137,8 @@ contains
                             do mm=1,size(Rl)
 
                                 net_int = (Rl(mm)-1d0)*lpol(ii,jj) + i_s*(spol(ii,jj)-s_tilde) &
-                                                 - (Rd-1d0)*dpol(ii,jj) - (Ra-1d0)*(1d0-delta(ll))*apol(ii,jj)
+                                                 - (Rd-1d0)*dpol(ii,jj) - (Ra-1d0)*(1d0-delta(ll))*apol(ii,jj)&
+                                                 - ins_tax(dpol(ii,jj))
 
                                 stock = lpol(ii,jj) + (spol(ii,jj)-s_tilde) -&
                                         dpol(ii,jj) - (1d0-delta(ll))*apol(ii,jj)
@@ -1297,7 +1305,8 @@ contains
                         do mm=1,size(Rl)
 
                             net_int = (Rl(mm)-1d0)*lpol(ii,jj) + i_s*(spol(ii,jj)-stilde(ii,jj,ll)) &
-                                             - (Rd-1d0)*dpol(ii,jj) - (Ra-1d0)*(1d0-delta(ll))*apol(ii,jj)
+                                             - (Rd-1d0)*dpol(ii,jj) - (Ra-1d0)*(1d0-delta(ll))*apol(ii,jj)&
+                                             - ins_tax(dpol(ii,jj))
 
                             stock = lpol(ii,jj) + (spol(ii,jj)-stilde(ii,jj,ll)) -&
                                     dpol(ii,jj) - (1d0-delta(ll))*apol(ii,jj)
@@ -1749,7 +1758,7 @@ contains
 
                                 ! compute net interest
                                 net_int = (Rl(mm)-1d0)*lpol(ii,jj) + i_s*(spol(ii,jj)-s_tilde) - (Rd-1d0)*dpol(ii,jj) &
-                                                        - (Ra-1d0)*(1d0-delta(ll))*apol(ii,jj)
+                                                        - (Ra-1d0)*(1d0-delta(ll))*apol(ii,jj) - ins_tax(dpol(ii,jj))
 
                                 stock = lpol(ii,jj) + (spol(ii,jj)-s_tilde) - dpol(ii,jj) &
                                                         - (1d0-delta(ll))*apol(ii,jj)
@@ -2089,24 +2098,6 @@ contains
             write(*,*)
 
         endif
-
-    end subroutine
-
-
-    subroutine output_elasticities()
-
-        implicit none
-
-        integer :: ii,jj,kk
-        real*8 :: ebar_new, lcr_new
-
-        ! compute 1% increase in dodd-frank cap, liq reqs
-        ebar_new = 1.01d0*.06d0
-        lcr_new = 1.01*100d0
-
-        write(*,*)
-        write(*,*) 'Output Elasticities for Current Dodd-Frank Regulations'
-        write(*,*)
 
     end subroutine
 

@@ -79,6 +79,7 @@ module globals
     real*8, parameter                                  :: liq_b = 0d0
 
     !Capital and liquidity requirements
+    real*8                                             :: tau_d  ! deposit insurance premium
     real*8                                             :: ebar
     real*8                                             :: phi_lr
     real*8, parameter :: lr_hair = .083d0 !.15d0
@@ -204,6 +205,17 @@ contains
         real*8 :: g
 
         g = theta*x**nu/nu
+
+    end function
+
+    function ins_tax(d):
+
+        implicit none
+
+        real*8, intent(in) :: d
+        real*8             :: ins_tax
+
+        ins_tax = tau_d*d
 
     end function
 
@@ -448,7 +460,8 @@ contains
                         do mm=1,size(Rl)
 
                             net_int = (Rl(mm)-1d0)*lpol(ii,kk) + i_s*(spol(ii,kk)-stilde(ii,kk,ll)) &
-                                             - (Rd-1d0)*dpol(ii,kk) - (Ra-1d0)*(1d0-delta(ll))*apol(ii,kk)
+                                             - (Rd-1d0)*dpol(ii,kk) - (Ra-1d0)*(1d0-delta(ll))*apol(ii,kk) &
+                                             - ins_tax(dpol(ii,kk))
 
                             stock = lpol(ii,kk) + (spol(ii,kk)-stilde(ii,kk,ll)) -&
                                     dpol(ii,kk) - (1d0-delta(ll))*apol(ii,kk)
@@ -564,7 +577,8 @@ contains
                         do mm=1,size(Rl)
 
                             net_int = (Rl(mm)-1d0)*lpol(ii,kk) + i_s*(spol(ii,kk)-stilde) &
-                                             - (Rd-1d0)*dpol(ii,kk) - (Ra-1d0)*(1d0-delta(ll))*apol(ii,kk)
+                                             - (Rd-1d0)*dpol(ii,kk) - (Ra-1d0)*(1d0-delta(ll))*apol(ii,kk)&
+                                             - ins_tax(dpol(ii,kk))
 
                             stock = lpol(ii,kk) + (spol(ii,kk)-stilde) -&
                                     dpol(ii,kk) - (1d0-delta(ll))*apol(ii,kk)
